@@ -1,0 +1,40 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/trikala-core",
+    "cli/trikala",
+]
+
+[workspace.package]
+version = "0.1.0-alpha.1"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+authors = ["Round Online"]
+repository = "https://github.com/roundonline/trikala"
+homepage = "https://trikala.dev"
+rust-version = "1.78"
+
+[workspace.dependencies]
+# Internal — workspace members
+trikala-core = { path = "crates/trikala-core", version = "0.1.0-alpha.1" }
+
+# F21 — exact pins to defend against ecosystem churn (lesson: comfy archived Nov 2025)
+# These pins are load-bearing. Bumping any of them is a v2 axiom event.
+anyhow     = "=1.0.94"
+thiserror  = "=2.0.9"
+clap       = { version = "=4.5.23", features = ["derive"] }
+serde      = { version = "=1.0.216", features = ["derive"] }
+toml       = "=0.8.19"
+tracing    = "=0.1.41"
+
+[profile.release]
+opt-level = 3
+lto       = "thin"
+codegen-units = 1
+strip = true
+
+[profile.dev]
+opt-level = 1   # deps optimized so wgpu/winit don't kill iteration
+
+[profile.dev.package."*"]
+opt-level = 3

@@ -1,0 +1,28 @@
+[package]
+name        = "trikala"
+description = "Born, built, shipped — a Rust + wgpu game pipeline."
+default-run = "trikala"
+version.workspace     = true
+edition.workspace     = true
+license.workspace     = true
+authors.workspace     = true
+repository.workspace  = true
+homepage.workspace    = true
+rust-version.workspace = true
+
+[[bin]]
+name = "trikala"
+path = "src/main.rs"
+
+# Also expose as `cargo trikala …` for Rust devs who prefer it.
+# Per the design note in docs/cli-pattern.md, the standalone binary
+# is primary; this alias is opt-in via `cargo install cargo-trikala`.
+[[bin]]
+name = "cargo-trikala"
+path = "src/main.rs"
+
+[dependencies]
+trikala-core = { workspace = true }
+anyhow       = { workspace = true }
+clap         = { workspace = true }
+tracing      = { workspace = true }

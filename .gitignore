@@ -1,0 +1,15 @@
+/target
+**/target
+Cargo.lock.bak
+*.swp
+*.swo
+.DS_Store
+.idea/
+.vscode/
+*.profraw
+.trikala/
+target/.trikala-dev-state.bin
+
+# Transport metadata — won't ride into RoundOnline/trikala when you
+# run `git init && git add .` inside the copied folder.
+HANDOFF.md

@@ -1,0 +1,35 @@
+# trikala project config — `trikala use <version>` to switch.
+
+[project]
+name = "{{project-name}}"
+
+[trikala]
+version = "0.1.0-alpha.1"
+
+# Build variants. The five defaults below are baked into trikala;
+# add custom ones as your game grows.
+
+[variants.release]
+features = []
+optimize = "release"
+strip    = true
+
+[variants.dev]
+features = ["dev-panel", "hot-reload"]
+optimize = "debug"
+
+[variants.demo]
+features        = ["demo-gate"]
+optimize        = "release"
+strip           = true
+assets_include  = ["assets/demo/**", "assets/shared/**"]
+assets_exclude  = ["assets/full/**"]
+
+[variants.capture]
+features = ["capture"]
+optimize = "release"
+entry    = "src/bin/capture.rs"
+
+[variants.tools]
+features = ["editor"]
+entry    = "src/bin/tools.rs"
