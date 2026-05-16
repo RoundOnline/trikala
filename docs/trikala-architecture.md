@@ -188,7 +188,7 @@ entry    = "src/bin/tools.rs"
 [00:50] output: "Live at round.online/play/anon/starfighter ✓ (7-day URL)"
 [00:55] click URL — game plays in browser
 [01:00] end card:
-        "trikala — copy a game, make it yours.
+        "trikala — fork a template, make it yours.
          No engine. No signup. 82 axioms."
 ```
 

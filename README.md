@@ -1,16 +1,48 @@
 # trikala
 
-> **Copy a game. Make it yours. Ship it in your browser.**
+> **Fork a template. Make it yours. Ship it in your browser.**
 >
 > Born, built, shipped — three commands, no signup.
 > The first Rust game framework that ships with a Claude Skill.
+
+## See it now
+
+```sh
+git clone https://github.com/RoundOnline/trikala
+cd trikala
+cargo run -p trikala-hello
+```
+
+A window opens, cycling through colors. That's 148 lines of plain
+Rust + wgpu + winit — the smallest trikala game. Every other
+template is a fork of this one file.
+
+Source: [`examples/hello/src/main.rs`](examples/hello/src/main.rs)
+
+**Prerequisites**
+
+- Rust 1.78+ ([rustup.rs](https://rustup.rs))
+- ~2 GB free disk space for the build cache (first build ~5 min)
+- macOS, Linux, or Windows
+
+## What's in alpha.1 today
+
+- ✅ Workspace + `trikala-core` foundation crate
+- ✅ CLI surface with all 8 commands — `cargo run -p trikala -- --help`
+- ✅ `examples/hello` — runnable 148-line wgpu + winit window
+- ✅ `templates/blank` — same code, in cargo-generate template form
+- ✅ `AGENT.md` — AI agents (Claude, Cursor, Cline, Aider) can pair-program from day one
+- 🚧 Most CLI verbs still return *"coming in 0.1.0-alpha.2"*:
+  `trikala new`, `dev`, `build`, `deploy`, `upgrade`
+
+## The full loop (lands in alpha.2)
 
 ```sh
 curl -fsSL https://trikala.round.online/install.sh | sh
 # (also: cargo install trikala)
 
 trikala new starfighter --template 2d-platformer
-   # → 200 lines of plain Rust in your folder. No engine to learn.
+   # → 200 lines of plain Rust in your folder
 
 cd starfighter
 trikala dev
@@ -36,9 +68,6 @@ There is **no engine**: no ECS, no scene graph, no plugin system. Each
 template is 100–300 lines of plain Rust that uses `wgpu`, `winit`,
 `kira`, and `egui` *directly*. You can delete `trikala` tomorrow and
 your game still compiles.
-
-This is the [shadcn/ui](https://ui.shadcn.com) pattern, applied to
-game development.
 
 ## Why this shape
 

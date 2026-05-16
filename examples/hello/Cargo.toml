@@ -1,0 +1,28 @@
+# Runnable preview of the blank template. Same source as
+# `templates/blank/src/main.rs`, but with a fixed package name so
+# cargo can resolve it before `trikala new` is implemented (alpha.2).
+#
+# `cargo run -p trikala-hello` opens a window cycling through colors.
+# Per axiom F30, this example uses wgpu/winit directly — no trikala-*
+# imports.
+
+[package]
+name    = "trikala-hello"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+# Same exact pins as templates/blank (F21).
+wgpu     = "=27.0.1"
+winit    = "=0.30.5"
+pollster = "=0.4.0"
+bytemuck = { version = "=1.19.0", features = ["derive"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+console_error_panic_hook = "=0.1.7"
+console_log              = "=1.0.0"
+log                      = "=0.4.22"
+wasm-bindgen             = "=0.2.99"
+wasm-bindgen-futures     = "=0.4.49"
+web-sys = { version = "=0.3.76", features = ["Document", "Window", "Element"] }

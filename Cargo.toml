@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/trikala-core",
     "cli/trikala",
+    "examples/hello",
 ]
 
 [workspace.package]

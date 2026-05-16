@@ -1,6 +1,6 @@
 # trikala
 
-> **Copy a game. Make it yours. Ship it in your browser.**
+> **Fork a template. Make it yours. Ship it in your browser.**
 >
 > Born, built, shipped — three commands, no signup.
 > The first Rust game framework that ships with a Claude Skill.
