@@ -32,8 +32,29 @@ Source: [`examples/hello/src/main.rs`](examples/hello/src/main.rs)
 - ✅ `examples/hello` — runnable 148-line wgpu + winit window
 - ✅ `templates/blank` — same code, in cargo-generate template form
 - ✅ `AGENT.md` — AI agents (Claude, Cursor, Cline, Aider) can pair-program from day one
+- ⏳ `examples/showroom` — stub today; full landscape + 3D + font + HUD demo lands in alpha.2 (see [`docs/showroom-plan.md`](docs/showroom-plan.md))
 - 🚧 Most CLI verbs still return *"coming in 0.1.0-alpha.2"*:
   `trikala new`, `dev`, `build`, `deploy`, `upgrade`
+
+## Which game are you making?
+
+You're a developer, but you're also a gamer — pick the path that
+matches the game you have in your head:
+
+| You want to focus on... | Start here | Status |
+|---|---|---|
+| **Gameplay / mechanics** | `templates/2d-platformer`, `templates/2d-topdown` | alpha.2 |
+| **Story / narrative** | `templates/visual-novel`, `templates/card-game` | alpha.3 |
+| **Visual fidelity / 3D** | `templates/3d-arena` | alpha.2 |
+| **Board / strategy** | `templates/board-game` (hex grid, from 3chess pattern) | alpha.2 |
+| **Not sure yet** | `cargo run -p trikala-showroom` — see everything in one window | stub today, full demo alpha.2 |
+
+The showroom is the entry point for the undecided: one window
+shows landscape + 3D model + font + HUD UI, so you see the
+language of the framework before committing to a direction.
+Once you see it, ask Claude Code / Cursor "I want to go in
+direction X" — the agent has the showroom + `AGENT.md` and can
+propose the diff that gets you there.
 
 ## The full loop (lands in alpha.2)
 

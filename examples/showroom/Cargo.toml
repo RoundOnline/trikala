@@ -1,0 +1,9 @@
+# Showroom — alpha.2 deliverable. See docs/showroom-plan.md for the
+# full vision. This crate is a stub today: it compiles, prints a
+# pointer to the plan, and reserves the workspace slot.
+
+[package]
+name    = "trikala-showroom"
+version = "0.0.0"
+edition = "2021"
+publish = false
