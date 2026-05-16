@@ -42,7 +42,7 @@ impl Game {
             .await
             .unwrap();
         let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor::default(), None)
+            .request_device(&wgpu::DeviceDescriptor::default())
             .await
             .unwrap();
         let caps = surface.get_capabilities(&adapter);
@@ -91,7 +91,8 @@ impl Game {
         let mut enc = self.device.create_command_encoder(&Default::default());
 
         // The whole "game" — three sine waves, one per channel, cycling.
-        let t = self.elapsed;
+        // wgpu::Color fields are f64; cast once at the top.
+        let t = f64::from(self.elapsed);
         let color = wgpu::Color {
             r: (t * 0.3).sin().mul_add(0.5, 0.5),
             g: (t * 0.5).sin().mul_add(0.5, 0.5),
@@ -105,6 +106,7 @@ impl Game {
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     resolve_target: None,
+                    depth_slice: None,
                     ops: wgpu::Operations { load: wgpu::LoadOp::Clear(color), store: wgpu::StoreOp::Store },
                 })],
                 ..Default::default()
