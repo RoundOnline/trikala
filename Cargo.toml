@@ -22,8 +22,9 @@ trikala-core = { path = "crates/trikala-core", version = "0.1.0-alpha.1" }
 
 # F21 — exact pins to defend against ecosystem churn (lesson: comfy archived Nov 2025)
 # These pins are load-bearing. Bumping any of them is a v2 axiom event.
+# thiserror bumped to 2.0.12 — wgpu 27.0.1 requires ^2.0.12 transitively.
 anyhow     = "=1.0.94"
-thiserror  = "=2.0.9"
+thiserror  = "=2.0.12"
 clap       = { version = "=4.5.23", features = ["derive"] }
 serde      = { version = "=1.0.216", features = ["derive"] }
 toml       = "=0.8.19"
