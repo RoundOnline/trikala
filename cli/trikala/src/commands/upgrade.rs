@@ -1,7 +1,7 @@
 //! `trikala upgrade` — replace the trikala CLI binary in place.
 //!
 //! Per U11, self-update is first-class. The installer script at
-//! `trikala.dev/install.sh` is the source of truth; this command
+//! `trikala.round.online/install.sh` is the source of truth; this command
 //! re-invokes it with the desired version (latest by default).
 
 use anyhow::Result;

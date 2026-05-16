@@ -54,7 +54,7 @@
 
 **U10.** *Error structural format* — ทุก error ต้องมี `code` (machine-readable เช่น `ATI-001`) + `cause` (1-line human) + `hint` (next step) + `docs_url` (deep link). Implements U4
 
-**U11.** Self-update first-class — install primary ผ่าน `curl -fsSL trikala.dev/install.sh | sh`, update ผ่าน `trikala upgrade`. `cargo install` คือ secondary, ไม่ใช่ primary install path
+**U11.** Self-update first-class — install primary ผ่าน `curl -fsSL trikala.round.online/install.sh | sh`, update ผ่าน `trikala upgrade`. `cargo install` คือ secondary, ไม่ใช่ primary install path
 
 **U12.** Telemetry **opt-in** เสมอ — banner ครั้งเดียวตอน first run, `TRIKALA_TELEMETRY=0` ปิดได้, **ห้าม block CLI** ถ้า user ปฏิเสธ. Data scope ดู U15
 

@@ -11,7 +11,7 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 authors = ["Round Online"]
 repository = "https://github.com/RoundOnline/trikala"
-homepage = "https://trikala.dev"
+homepage = "https://trikala.round.online"
 rust-version = "1.78"
 
 [workspace.dependencies]

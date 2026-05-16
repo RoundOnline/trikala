@@ -53,8 +53,8 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
-      # CLI is a host-only binary; foundation crates must build for wasm.
-      - run: cargo build --target wasm32-unknown-unknown -p trikala-core -p trikala-render
+      # CLI is a host-only binary; foundation crate must build for wasm.
+      - run: cargo build --target wasm32-unknown-unknown -p trikala-core
 
   commitlint:
     name: conventional commits

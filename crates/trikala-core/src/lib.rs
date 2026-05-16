@@ -85,7 +85,7 @@ impl TrikalaError {
     /// Construct an error in the given phase with an auto-coded number.
     pub fn new(phase: Phase, num: u16, cause: impl Into<String>, hint: impl Into<String>) -> Self {
         let code = format!("{}-{:03}", phase.code(), num);
-        let docs_url = format!("https://trikala.dev/errors/{}", code.to_lowercase());
+        let docs_url = format!("https://trikala.round.online/errors/{}", code.to_lowercase());
         Self { code, cause: cause.into(), hint: hint.into(), docs_url }
     }
 }

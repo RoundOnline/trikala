@@ -142,7 +142,7 @@ writes about in the Rust ecosystem.
 ## Try it
 
 ```sh
-curl -fsSL https://trikala.dev/install.sh | sh
+curl -fsSL https://trikala.round.online/install.sh | sh
 
 trikala new starfighter --template 2d-platformer
 cd starfighter

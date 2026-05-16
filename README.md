@@ -6,7 +6,7 @@
 > The first Rust game framework that ships with a Claude Skill.
 
 ```sh
-curl -fsSL https://trikala.dev/install.sh | sh
+curl -fsSL https://trikala.round.online/install.sh | sh
 # (also: cargo install trikala)
 
 trikala new starfighter --template 2d-platformer

@@ -7,7 +7,7 @@ file an issue — that's a regression against axiom U2 / U3.
 
 ```sh
 # Recommended (axiom U11 — installer is the primary path)
-curl -fsSL https://trikala.dev/install.sh | sh
+curl -fsSL https://trikala.round.online/install.sh | sh
 
 # Also works (slower; cargo build from source)
 cargo install trikala
@@ -71,5 +71,5 @@ trikala doctor --flame           # flamegraph of the current build
 ```
 
 Every error trikala emits has a code like `ATI-001`, a one-line
-cause, a one-line hint, and a `docs.trikala.dev` URL. If you see
+cause, a one-line hint, and a `trikala.round.online/errors/...` URL. If you see
 a stack trace by default, that's a regression against axiom U4.
