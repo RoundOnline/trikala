@@ -4,6 +4,7 @@ members = [
     "crates/trikala-core",
     "cli/trikala",
     "examples/hello",
+    "examples/mood",
     "examples/showroom",
 ]
 
