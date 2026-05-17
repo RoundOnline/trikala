@@ -43,6 +43,8 @@ struct Vertex {
     emissive: f32,
 }
 
+const FIREFLY_COUNT: usize = 4;
+
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 struct Uniforms {
@@ -57,6 +59,8 @@ struct Uniforms {
     // — used during portal view so we don't sample the wrong world's
     // shadow map).
     ambient_color: [f32; 4],
+    fly_pos: [[f32; 4]; FIREFLY_COUNT],
+    fly_color: [f32; 4],
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -411,6 +415,108 @@ fn build_door_mesh() -> (Vec<Vertex>, Vec<u32>) {
     (v, i)
 }
 
+// Each firefly carries its own position and velocity so it drifts
+// independently. A soft spring pulls them toward the player (with
+// a minimum stand-off so they don't all collapse onto the head),
+// plus per-firefly sin-noise creates organic wandering. The result
+// reads as four little creatures with minds of their own that just
+// happen to like staying near you.
+#[derive(Copy, Clone)]
+struct Firefly {
+    pos: Vec3,
+    prev_pos: Vec3,
+    vel: Vec3,
+    world: u8, // 0 = A, 1 = B — flips when the firefly walks through the door
+    phase: [f32; 3],
+}
+
+fn step_fireflies(
+    flies: &mut [Firefly; FIREFLY_COUNT],
+    player_pos: Vec3,
+    player_world: u8,
+    dt: f32,
+    t: f32,
+) {
+    let player_target = player_pos + Vec3::new(0.0, 0.9, 0.0);
+    let door_waypoint = PORTAL_POS + Vec3::new(0.0, -0.3, 0.0);
+    for fly in flies.iter_mut() {
+        fly.prev_pos = fly.pos;
+        // A firefly that's already in the same world as the player
+        // is "with" them; one that's in the other world needs to go
+        // through the door first. The world tag — not the spatial
+        // position — decides which side of the portal counts as the
+        // way home, so the firefly seeks the door whenever it's
+        // separated from the player by a teleport.
+        let need_to_cross = fly.world != player_world;
+        let target = if need_to_cross { door_waypoint } else { player_target };
+        let to_target = target - fly.pos;
+        let dist = to_target.length();
+        let dir = if dist > 0.001 { to_target / dist } else { Vec3::ZERO };
+        let pull = if need_to_cross {
+            dir * 7.0
+        } else if dist > 1.6 {
+            dir * 5.0
+        } else if dist < 0.45 {
+            -dir * 3.0
+        } else {
+            dir * 0.6
+        };
+        let p = fly.phase;
+        let wander_scale = if need_to_cross { 0.25 } else { 1.0 };
+        let wander = Vec3::new(
+            (t * 1.7 + p[0]).sin() * 2.2 + (t * 0.9 + p[1]).cos() * 1.0,
+            (t * 2.3 + p[1]).sin() * 1.4 + (t * 1.1 + p[2]).cos() * 0.5,
+            (t * 1.3 + p[2]).sin() * 2.2 + (t * 0.7 + p[0]).cos() * 1.0,
+        ) * wander_scale;
+        fly.vel += (pull + wander) * dt;
+        fly.vel *= (1.0 - 1.5 * dt).max(0.0);
+        let speed = fly.vel.length();
+        let max_speed = if need_to_cross { 6.0 } else { 4.0 };
+        if speed > max_speed {
+            fly.vel *= max_speed / speed;
+        }
+        fly.pos += fly.vel * dt;
+        if fly.pos.y < 0.15 {
+            fly.pos.y = 0.15;
+            fly.vel.y = fly.vel.y.abs() * 0.4;
+        }
+
+        // Did the firefly just walk through the door rectangle?
+        // The world tag only changes when the firefly is catching
+        // UP to the player (different world). Once it matches the
+        // player's world, further door crossings don't flip it —
+        // otherwise wandering past the door, or chasing a player
+        // who walked around to the door's other side, would cause
+        // a ping-pong between worlds.
+        if fly.world != player_world {
+            let prev_d = (fly.prev_pos - PORTAL_POS).dot(PORTAL_NORMAL);
+            let curr_d = (fly.pos - PORTAL_POS).dot(PORTAL_NORMAL);
+            if prev_d.signum() != curr_d.signum() {
+                let local = fly.pos - PORTAL_POS;
+                let in_x = local.x.abs() < PORTAL_HALF_W + 0.20;
+                let in_y = local.y > -PORTAL_HALF_H - 0.20 && local.y < PORTAL_HALF_H + 0.50;
+                if in_x && in_y {
+                    fly.world = player_world;
+                }
+            }
+        }
+    }
+}
+
+fn fireflies_for_world(flies: &[Firefly; FIREFLY_COUNT], world: u8) -> Vec<Vec3> {
+    flies.iter().filter(|f| f.world == world).map(|f| f.pos).collect()
+}
+
+fn build_fireflies(positions: &[Vec3]) -> (Vec<Vertex>, Vec<u32>) {
+    let mut v = Vec::new();
+    let mut i = Vec::new();
+    let glow = Vec3::new(3.5, 5.0, 2.5);
+    for &pos in positions {
+        push_cube(&mut v, &mut i, pos, Vec3::new(0.07, 0.07, 0.07), glow, 1.0);
+    }
+    (v, i)
+}
+
 // The "magic surface" of the portal — a single quad sitting inside
 // the door frame, oriented facing +z. The portal pipeline draws
 // this quad and samples portal_color_tex with screen-space pixel
@@ -561,6 +667,8 @@ struct Uniforms {
     moon_dir: vec4<f32>,
     moon_color: vec4<f32>,
     ambient_color: vec4<f32>,
+    fly_pos: array<vec4<f32>, 4>,
+    fly_color: vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(1) @binding(0) var shadow_tex: texture_depth_2d;
@@ -635,7 +743,19 @@ fn fs(in: VsOut) -> @location(0) vec4<f32> {
     }
     let moon_diffuse = n_dot_l * shadow * u.moon_color.xyz;
 
-    let base = in.color * (u.ambient_color.xyz + lamp_diffuse + moon_diffuse);
+    // Fireflies — N small warm point lights orbiting the player.
+    // .w of each entry is a 0/1 mask so fireflies that haven't yet
+    // walked through the door don't light the world they aren't in.
+    var fly_total = vec3<f32>(0.0);
+    for (var f = 0; f < 4; f = f + 1) {
+        let to_fly = u.fly_pos[f].xyz - in.world;
+        let fd = length(to_fly);
+        let fl = normalize(to_fly);
+        let atten = 1.0 / (0.4 + 0.6 * fd + 1.8 * fd * fd);
+        fly_total = fly_total + max(dot(n, fl), 0.0) * u.fly_color.xyz * atten * u.fly_pos[f].w;
+    }
+
+    let base = in.color * (u.ambient_color.xyz + lamp_diffuse + moon_diffuse + fly_total);
     let glow = in.color * emi * 2.0;
     let lit = base + glow;
     return vec4<f32>(lit / (lit + vec3<f32>(1.0)), 1.0);
@@ -652,6 +772,8 @@ struct Uniforms {
     moon_dir: vec4<f32>,
     moon_color: vec4<f32>,
     ambient_color: vec4<f32>,
+    fly_pos: array<vec4<f32>, 4>,
+    fly_color: vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> u: Uniforms;
 
@@ -677,6 +799,8 @@ struct Uniforms {
     moon_dir: vec4<f32>,
     moon_color: vec4<f32>,
     ambient_color: vec4<f32>,
+    fly_pos: array<vec4<f32>, 4>,
+    fly_color: vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(1) @binding(0) var portal_tex: texture_2d<f32>;
@@ -700,6 +824,8 @@ fn fs(@builtin(position) frag_pos: vec4<f32>) -> @location(0) vec4<f32> {
 
 const PLAYER_VBUF_CAPACITY: u64 = 4096 * std::mem::size_of::<Vertex>() as u64;
 const PLAYER_IBUF_CAPACITY: u64 = 4096 * std::mem::size_of::<u32>() as u64;
+const FIREFLY_VBUF_CAPACITY: u64 = 256 * std::mem::size_of::<Vertex>() as u64;
+const FIREFLY_IBUF_CAPACITY: u64 = 256 * std::mem::size_of::<u32>() as u64;
 const SHADOW_MAP_SIZE: u32 = 1024;
 
 struct WorldGpu {
@@ -745,11 +871,20 @@ struct Game {
 
     player_vbuf: wgpu::Buffer,
     player_ibuf: wgpu::Buffer,
+    // Two firefly mesh buffers — one per world. Each frame the
+    // fireflies are sorted by their `.world` tag and the matching
+    // group is written here. The main pass picks the buffer that
+    // matches cur_world; the portal pass picks the other.
+    firefly_vbufs: [wgpu::Buffer; 2],
+    firefly_ibufs: [wgpu::Buffer; 2],
+    firefly_counts: [u32; 2],
 
     current_world: u8, // 0 = A, 1 = B
     player: Player,
     input: Input,
     third_person: bool,
+    fireflies: [Firefly; FIREFLY_COUNT],
+    time: f32,
     last_frame: std::time::Instant,
 }
 
@@ -846,6 +981,20 @@ impl Game {
             usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let mk_fly_vbuf = |label: &str| device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(label),
+            size: FIREFLY_VBUF_CAPACITY,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let mk_fly_ibuf = |label: &str| device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(label),
+            size: FIREFLY_IBUF_CAPACITY,
+            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let firefly_vbufs = [mk_fly_vbuf("firefly-v-a"), mk_fly_vbuf("firefly-v-b")];
+        let firefly_ibufs = [mk_fly_ibuf("firefly-i-a"), mk_fly_ibuf("firefly-i-b")];
 
         let uniform_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("uniforms"),
@@ -1118,6 +1267,7 @@ impl Game {
             portal_vbuf, portal_ibuf, portal_index_count: pi.len() as u32,
             door_vbuf, door_ibuf, door_index_count,
             player_vbuf, player_ibuf,
+            firefly_vbufs, firefly_ibufs, firefly_counts: [0, 0],
             current_world: 0,
             player: Player {
                 pos: spawn, prev_pos: spawn,
@@ -1132,6 +1282,19 @@ impl Game {
             },
             input: Input::default(),
             third_person: true,
+            fireflies: {
+                let make = |off: Vec3, phase: [f32; 3]| {
+                    let p = spawn + off;
+                    Firefly { pos: p, prev_pos: p, vel: Vec3::ZERO, world: 0, phase }
+                };
+                [
+                    make(Vec3::new(0.5, 1.0, 0.0), [0.0, 1.7, 3.4]),
+                    make(Vec3::new(-0.5, 1.2, 0.3), [2.1, 0.5, 4.0]),
+                    make(Vec3::new(0.2, 0.7, -0.5), [1.3, 3.2, 0.8]),
+                    make(Vec3::new(0.3, 1.4, 0.4), [3.7, 2.4, 1.5]),
+                ]
+            },
+            time: 0.0,
             last_frame: std::time::Instant::now(),
         }
     }
@@ -1333,6 +1496,31 @@ impl Game {
         self.queue.write_buffer(&self.player_vbuf, 0, bytemuck::cast_slice(&cv));
         self.queue.write_buffer(&self.player_ibuf, 0, bytemuck::cast_slice(&ci));
 
+        // Fireflies — step their state forward, then rebuild a
+        // separate mesh per world (so a firefly only appears in the
+        // world it's currently tagged with).
+        self.time += dt;
+        step_fireflies(
+            &mut self.fireflies,
+            self.player.pos,
+            self.current_world,
+            dt,
+            self.time,
+        );
+        for w in 0..2u8 {
+            let positions = fireflies_for_world(&self.fireflies, w);
+            let (fv, fi) = build_fireflies(&positions);
+            self.firefly_counts[w as usize] = fi.len() as u32;
+            if !fv.is_empty() {
+                self.queue.write_buffer(
+                    &self.firefly_vbufs[w as usize], 0, bytemuck::cast_slice(&fv));
+                self.queue.write_buffer(
+                    &self.firefly_ibufs[w as usize], 0, bytemuck::cast_slice(&fi));
+            }
+        }
+        let cur_world = self.current_world;
+        let portal_src_world: u8 = 1 - cur_world;
+
         let frame = match self.surface.get_current_texture() {
             Ok(f) => f,
             Err(_) => {
@@ -1349,7 +1537,7 @@ impl Game {
         // render and the shadow pass that feeds it.
         if portal_active {
             let portal_lvp = compute_light_view_proj(&portal_src.env, self.player.pos);
-            let u_shadow_portal = build_uniforms(portal_lvp, &portal_src.env, &cam, &self.player.pos, 1.0);
+            let u_shadow_portal = build_uniforms(portal_lvp, &portal_src.env, &cam, &self.player.pos, 1.0, &self.fireflies, portal_src_world);
             self.queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&u_shadow_portal));
             {
                 let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1375,7 +1563,7 @@ impl Game {
                 pass.draw_indexed(0..player_index_count, 0, 0..1);
             }
 
-            let u_portal = build_uniforms(virt_view_proj, &portal_src.env, &cam, &self.player.pos, 1.0);
+            let u_portal = build_uniforms(virt_view_proj, &portal_src.env, &cam, &self.player.pos, 1.0, &self.fireflies, portal_src_world);
             self.queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&u_portal));
             {
                 let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1410,13 +1598,19 @@ impl Game {
                     pass.set_index_buffer(self.player_ibuf.slice(..), wgpu::IndexFormat::Uint32);
                     pass.draw_indexed(0..player_index_count, 0, 0..1);
                 }
+                let fc = self.firefly_counts[portal_src_world as usize];
+                if fc > 0 {
+                    pass.set_vertex_buffer(0, self.firefly_vbufs[portal_src_world as usize].slice(..));
+                    pass.set_index_buffer(self.firefly_ibufs[portal_src_world as usize].slice(..), wgpu::IndexFormat::Uint32);
+                    pass.draw_indexed(0..fc, 0, 0..1);
+                }
             }
         }
         let _ = portal_src; let _ = virt_view_proj;
 
         // ── PASS C: shadow map for CURRENT world ──
         let light_view_proj = compute_light_view_proj(&cur.env, self.player.pos);
-        let u_shadow = build_uniforms(light_view_proj, &cur.env, &cam, &self.player.pos, 1.0);
+        let u_shadow = build_uniforms(light_view_proj, &cur.env, &cam, &self.player.pos, 1.0, &self.fireflies, cur_world);
         self.queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&u_shadow));
         {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1449,16 +1643,7 @@ impl Game {
         }
 
         // ── PASS 3: main render of CURRENT world + portal quad ──
-        let u_main = Uniforms {
-            view_proj: view_proj.to_cols_array_2d(),
-            light_view_proj: light_view_proj.to_cols_array_2d(),
-            camera_pos: [cam.x, cam.y, cam.z, 1.0],
-            lamp_pos: [cur.env.lamp_pos.x, cur.env.lamp_pos.y, cur.env.lamp_pos.z, 1.0],
-            lamp_color: cur.env.lamp_color,
-            moon_dir: [cur.env.moon_dir.x, cur.env.moon_dir.y, cur.env.moon_dir.z, 0.0],
-            moon_color: cur.env.moon_color,
-            ambient_color: [cur.env.ambient[0], cur.env.ambient[1], cur.env.ambient[2], 1.0],
-        };
+        let u_main = build_uniforms(view_proj, &cur.env, &cam, &self.player.pos, 1.0, &self.fireflies, cur_world);
         self.queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&u_main));
         {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1507,6 +1692,16 @@ impl Game {
                 pass.set_index_buffer(self.player_ibuf.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..player_index_count, 0, 0..1);
             }
+            // Fireflies — only those currently tagged with cur_world
+            // appear in the main pass. The others are still in the
+            // other world and will only be seen through the portal
+            // (or once they walk through the door themselves).
+            let fc = self.firefly_counts[cur_world as usize];
+            if fc > 0 {
+                pass.set_vertex_buffer(0, self.firefly_vbufs[cur_world as usize].slice(..));
+                pass.set_index_buffer(self.firefly_ibufs[cur_world as usize].slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..fc, 0, 0..1);
+            }
             // Portal quad — only when the portal is active.
             if portal_active {
                 pass.set_pipeline(&self.portal_pipeline);
@@ -1524,8 +1719,24 @@ impl Game {
     }
 }
 
-fn build_uniforms(view_proj: Mat4, env: &WorldEnv, cam: &Vec3, player_pos: &Vec3, shadow_strength: f32) -> Uniforms {
+fn build_uniforms(
+    view_proj: Mat4,
+    env: &WorldEnv,
+    cam: &Vec3,
+    player_pos: &Vec3,
+    shadow_strength: f32,
+    flies: &[Firefly; FIREFLY_COUNT],
+    target_world: u8,
+) -> Uniforms {
     let light_view_proj = compute_light_view_proj(env, *player_pos);
+    let mut fly_pos = [[0.0_f32; 4]; FIREFLY_COUNT];
+    for (i, f) in flies.iter().enumerate() {
+        // .w is an intensity mask: 1.0 if this firefly belongs to
+        // the world being rendered, 0.0 if it lives in the other
+        // world (so the shader doesn't add its glow).
+        let w = if f.world == target_world { 1.0 } else { 0.0 };
+        fly_pos[i] = [f.pos.x, f.pos.y, f.pos.z, w];
+    }
     Uniforms {
         view_proj: view_proj.to_cols_array_2d(),
         light_view_proj: light_view_proj.to_cols_array_2d(),
@@ -1535,6 +1746,8 @@ fn build_uniforms(view_proj: Mat4, env: &WorldEnv, cam: &Vec3, player_pos: &Vec3
         moon_dir: [env.moon_dir.x, env.moon_dir.y, env.moon_dir.z, 0.0],
         moon_color: env.moon_color,
         ambient_color: [env.ambient[0], env.ambient[1], env.ambient[2], shadow_strength],
+        fly_pos,
+        fly_color: [3.5, 5.0, 2.5, 1.0],
     }
 }
 
