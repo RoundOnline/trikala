@@ -28,6 +28,7 @@ pub struct SkinVertex {
     pub emissive: f32,
     pub joints: [u32; 4],
     pub weights: [f32; 4],
+    pub uv: [f32; 2],
 }
 
 #[derive(Clone)]
@@ -50,12 +51,34 @@ struct AnimClip {
     channels: Vec<AnimChannel>,
 }
 
+/// One drawable slice of the character — one primitive's worth of
+/// indices into the shared `vbuf`/`ibuf`, plus a bind group that
+/// binds the shared bone buffer alongside that primitive's diffuse
+/// texture. Erika Archer has four such submeshes (body, clothes,
+/// eyes, eyelashes); simpler characters typically have one.
+pub struct SubMesh {
+    pub index_start: u32,
+    pub index_count: u32,
+    pub bind_group: wgpu::BindGroup,
+    #[allow(dead_code)]
+    texture: wgpu::Texture,
+    #[allow(dead_code)]
+    sampler: wgpu::Sampler,
+}
+
 pub struct Character {
     pub vbuf: wgpu::Buffer,
     pub ibuf: wgpu::Buffer,
     pub index_count: u32,
     pub bone_buffer: wgpu::Buffer,
+    /// Bind group used by the shadow pass — it samples no textures
+    /// but still expects the bone buffer at slot 0; we just point its
+    /// texture/sampler slots at the first submesh as a placeholder.
     pub bone_bind_group: wgpu::BindGroup,
+    /// One entry per skinned primitive in the source asset. The
+    /// main render pass iterates these so each part draws with its
+    /// own diffuse texture.
+    pub submeshes: Vec<SubMesh>,
 
     node_count: usize,
     node_parents: Vec<Option<usize>>,
@@ -77,67 +100,115 @@ pub struct Character {
 impl Character {
     pub fn load(
         device: &wgpu::Device,
+        queue: &wgpu::Queue,
         path: &str,
         bone_bgl: &wgpu::BindGroupLayout,
     ) -> Self {
-        let (doc, buffers, _) = gltf::import(path).expect("failed to load glb");
+        let (doc, buffers, images) = gltf::import(path).expect("failed to load glb");
 
-        // Find the first node that owns both a mesh and a skin.
-        // Joint indices in a primitive's JOINTS_0 are relative to
-        // its parent node's skin, so we have to pin the loader to a
-        // single (node, skin) pair to keep them consistent. Then we
-        // concatenate every primitive in that one mesh — RobotExpressive
-        // is split into several primitives (body, joints, etc.) but
-        // they all share the same skeleton.
-        let skinned_node = doc
+        // Erika Archer (and most fully-detailed Mixamo characters)
+        // split the figure across multiple nodes — body, hair, eyes,
+        // eyelashes, outfit, each its own mesh + skin pair sharing
+        // the same skeleton. We have to concatenate every such node,
+        // not just the first one, or the visible result is e.g. the
+        // eyelashes hovering in space. We grab the skin from the
+        // first skinned-mesh node we see and trust that all the
+        // other skinned-mesh nodes share it.
+        let skin = doc
             .nodes()
             .find(|n| n.skin().is_some() && n.mesh().is_some())
+            .and_then(|n| n.skin())
             .expect("glTF has no skinned mesh node");
-        let mesh = skinned_node.mesh().unwrap();
-        let skin = skinned_node.skin().unwrap();
 
+        // First pass: walk every skinned primitive once, appending its
+        // vertices/indices into the shared buffers and remembering
+        // each primitive's index range + which glTF image it wants
+        // for its diffuse texture. Then in a second pass we'll turn
+        // those records into GPU textures + bind groups.
+        struct SubMeshDesc {
+            index_start: u32,
+            index_count: u32,
+            tex_index: Option<usize>,
+        }
+        let mut sub_descs: Vec<SubMeshDesc> = Vec::new();
         let mut positions: Vec<[f32; 3]> = Vec::new();
         let mut normals: Vec<[f32; 3]> = Vec::new();
         let mut joints_raw: Vec<[u16; 4]> = Vec::new();
         let mut weights_raw: Vec<[f32; 4]> = Vec::new();
+        let mut uvs: Vec<[f32; 2]> = Vec::new();
         let mut indices: Vec<u32> = Vec::new();
-        for primitive in mesh.primitives() {
-            let reader = primitive.reader(|b| Some(&buffers[b.index()]));
-            let prim_joints = match reader.read_joints(0) {
-                Some(j) => j,
-                None => continue,
-            };
-            let prim_weights = match reader.read_weights(0) {
-                Some(w) => w,
-                None => continue,
-            };
-            let prim_positions: Vec<[f32; 3]> = match reader.read_positions() {
-                Some(it) => it.collect(),
-                None => continue,
-            };
-            let prim_normals: Vec<[f32; 3]> = reader
-                .read_normals()
-                .map(|it| it.collect::<Vec<[f32; 3]>>())
-                .unwrap_or_else(|| vec![[0.0, 1.0, 0.0]; prim_positions.len()]);
-            let prim_indices: Vec<u32> = reader
-                .read_indices()
-                .map(|it| it.into_u32().collect())
-                .unwrap_or_else(|| (0..prim_positions.len() as u32).collect());
+        for node in doc.nodes() {
+            let (Some(mesh), Some(_)) = (node.mesh(), node.skin()) else { continue };
+            for primitive in mesh.primitives() {
+                let reader = primitive.reader(|b| Some(&buffers[b.index()]));
+                let prim_joints = match reader.read_joints(0) {
+                    Some(j) => j,
+                    None => continue,
+                };
+                let prim_weights = match reader.read_weights(0) {
+                    Some(w) => w,
+                    None => continue,
+                };
+                let prim_positions: Vec<[f32; 3]> = match reader.read_positions() {
+                    Some(it) => it.collect(),
+                    None => continue,
+                };
+                let prim_normals: Vec<[f32; 3]> = reader
+                    .read_normals()
+                    .map(|it| it.collect::<Vec<[f32; 3]>>())
+                    .unwrap_or_else(|| vec![[0.0, 1.0, 0.0]; prim_positions.len()]);
+                let prim_uvs: Vec<[f32; 2]> = reader
+                    .read_tex_coords(0)
+                    .map(|it| it.into_f32().collect::<Vec<[f32; 2]>>())
+                    .unwrap_or_else(|| vec![[0.0, 0.0]; prim_positions.len()]);
+                let prim_indices: Vec<u32> = reader
+                    .read_indices()
+                    .map(|it| it.into_u32().collect())
+                    .unwrap_or_else(|| (0..prim_positions.len() as u32).collect());
 
-            let base = positions.len() as u32;
-            positions.extend(prim_positions);
-            normals.extend(prim_normals);
-            joints_raw.extend(prim_joints.into_u16());
-            weights_raw.extend(prim_weights.into_f32());
-            indices.extend(prim_indices.iter().map(|i| i + base));
+                let tex_index = primitive
+                    .material()
+                    .pbr_metallic_roughness()
+                    .base_color_texture()
+                    .map(|info| info.texture().source().index());
+
+                let base = positions.len() as u32;
+                positions.extend(prim_positions);
+                normals.extend(prim_normals);
+                joints_raw.extend(prim_joints.into_u16());
+                weights_raw.extend(prim_weights.into_f32());
+                uvs.extend(prim_uvs);
+                let index_start = indices.len() as u32;
+                indices.extend(prim_indices.iter().map(|i| i + base));
+                let index_count = indices.len() as u32 - index_start;
+                sub_descs.push(SubMeshDesc { index_start, index_count, tex_index });
+            }
         }
+        println!("[character] {} skinned submeshes", sub_descs.len());
         assert!(!positions.is_empty(), "no skinned primitives in glTF");
+
+        // Quick AABB of vertex positions — helps catch scale/origin
+        // mismatches (Mixamo exports are often 100× larger than the
+        // scene because of cm/m unit confusion).
+        let mut mn = [f32::INFINITY; 3];
+        let mut mx = [f32::NEG_INFINITY; 3];
+        for p in &positions {
+            for i in 0..3 {
+                if p[i] < mn[i] { mn[i] = p[i]; }
+                if p[i] > mx[i] { mx[i] = p[i]; }
+            }
+        }
+        println!(
+            "[character] mesh aabb min=({:.3},{:.3},{:.3}) max=({:.3},{:.3},{:.3}) size=({:.3},{:.3},{:.3})",
+            mn[0], mn[1], mn[2], mx[0], mx[1], mx[2],
+            mx[0] - mn[0], mx[1] - mn[1], mx[2] - mn[2]
+        );
 
         let vertices: Vec<SkinVertex> = (0..positions.len())
             .map(|i| SkinVertex {
                 pos: positions[i],
                 normal: normals[i],
-                color: [0.85, 0.72, 0.58],
+                color: [1.0, 1.0, 1.0], // multiply with texture sample
                 emissive: 0.0,
                 joints: [
                     joints_raw[i][0] as u32,
@@ -146,6 +217,7 @@ impl Character {
                     joints_raw[i][3] as u32,
                 ],
                 weights: weights_raw[i],
+                uv: uvs[i],
             })
             .collect();
 
@@ -165,6 +237,7 @@ impl Character {
             }
         }
         let mut node_base_trs = vec![(Vec3::ZERO, Quat::IDENTITY, Vec3::ONE); node_count];
+        let mut hips_node: Option<usize> = None;
         for node in doc.nodes() {
             let (t, r, s) = node.transform().decomposed();
             node_base_trs[node.index()] = (
@@ -172,6 +245,16 @@ impl Character {
                 Quat::from_xyzw(r[0], r[1], r[2], r[3]),
                 Vec3::from_array(s),
             );
+            if hips_node.is_none() {
+                if let Some(name) = node.name() {
+                    if name.to_lowercase().contains("hips") {
+                        hips_node = Some(node.index());
+                    }
+                }
+            }
+        }
+        if let Some(h) = hips_node {
+            println!("[character] hips node index = {} (root-motion translation will be stripped)", h);
         }
 
         // Load every clip in the file, keyed by name.
@@ -198,6 +281,19 @@ impl Character {
                     Some(o) => o,
                     None => continue,
                 };
+                let is_hips_translation = matches!(
+                    (hips_node, &outputs),
+                    (Some(h), gltf::animation::util::ReadOutputs::Translations(_)) if h == target_node
+                );
+                if is_hips_translation {
+                    // Mixamo bakes root motion into the Hips translation —
+                    // the character literally walks forward in clip-local
+                    // space, which would double up with gameplay-driven
+                    // player.pos and cause a per-loop snap-back. Skip the
+                    // channel so the Hips stays parented at the bind-pose
+                    // origin; rotation channels still drive the gait.
+                    continue;
+                }
                 let values = match outputs {
                     gltf::animation::util::ReadOutputs::Translations(iter) => {
                         AnimValues::Translations(iter.map(Vec3::from_array).collect())
@@ -231,16 +327,6 @@ impl Character {
             .map(|n| n.to_string())
             .or_else(|| clip_order.first().cloned());
 
-        eprintln!(
-            "[character] loaded {} joints, {} clips: {:?}",
-            bone_count,
-            clips.len(),
-            clip_order
-        );
-        if let Some(w) = walk_clip.as_deref() {
-            eprintln!("[character] walk clip resolved to: {}", w);
-        }
-
         let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("char-v"),
             contents: bytemuck::cast_slice(&vertices),
@@ -257,24 +343,127 @@ impl Character {
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let bone_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("char-bone-bg"),
-            layout: bone_bgl,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: bone_buffer.as_entire_binding(),
-            }],
-        });
 
-        // CesiumMan ships facing +Z; our camera looks toward -Z at
-        // yaw=0, so flip by 180° around Y so the character's front
-        // aligns with player forward.
+        // Build one diffuse texture + sampler + bind group per glTF
+        // primitive. Each submesh's own material's base-color texture
+        // wins; primitives without a texture fall back to 1×1 white.
+        let make_texture = |tex_index: Option<usize>| -> (wgpu::Texture, wgpu::Sampler) {
+            let (tex_w, tex_h, tex_pixels) = if let Some(idx) = tex_index {
+                let img = &images[idx];
+                let pixels = match img.format {
+                    gltf::image::Format::R8G8B8 => {
+                        let mut rgba = Vec::with_capacity(img.pixels.len() / 3 * 4);
+                        for chunk in img.pixels.chunks(3) {
+                            rgba.extend_from_slice(chunk);
+                            rgba.push(255);
+                        }
+                        rgba
+                    }
+                    gltf::image::Format::R8G8B8A8 => img.pixels.clone(),
+                    _ => vec![255; (img.width * img.height * 4) as usize],
+                };
+                (img.width, img.height, pixels)
+            } else {
+                (1, 1, vec![255, 255, 255, 255])
+            };
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("char-diffuse"),
+                size: wgpu::Extent3d { width: tex_w, height: tex_h, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &tex_pixels,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(tex_w * 4),
+                    rows_per_image: Some(tex_h),
+                },
+                wgpu::Extent3d { width: tex_w, height: tex_h, depth_or_array_layers: 1 },
+            );
+            let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("char-diffuse-samp"),
+                address_mode_u: wgpu::AddressMode::Repeat,
+                address_mode_v: wgpu::AddressMode::Repeat,
+                address_mode_w: wgpu::AddressMode::Repeat,
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
+                ..Default::default()
+            });
+            (texture, sampler)
+        };
+
+        let submeshes: Vec<SubMesh> = sub_descs
+            .into_iter()
+            .map(|d| {
+                let (texture, sampler) = make_texture(d.tex_index);
+                let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+                let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("char-submesh-bg"),
+                    layout: bone_bgl,
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: bone_buffer.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(&view) },
+                        wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&sampler) },
+                    ],
+                });
+                SubMesh {
+                    index_start: d.index_start,
+                    index_count: d.index_count,
+                    bind_group,
+                    texture,
+                    sampler,
+                }
+            })
+            .collect();
+
+        // Shadow pass bind group — uses the same layout but doesn't
+        // sample the texture; we just point it at the first submesh's
+        // resources as a placeholder so the layout type-checks.
+        let bone_bind_group = if let Some(first) = submeshes.first() {
+            // Recreate using first submesh's texture/sampler via a
+            // separate bind group bound to the same layout. Easiest
+            // way: reuse the first submesh's bind group directly.
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("char-shadow-bg"),
+                layout: bone_bgl,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: bone_buffer.as_entire_binding() },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(
+                            &first.texture.create_view(&wgpu::TextureViewDescriptor::default()),
+                        ),
+                    },
+                    wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(&first.sampler) },
+                ],
+            })
+        } else {
+            unreachable!("no submeshes after assertion above");
+        };
+
+        // Erika Archer (and most Mixamo characters out of FBX2glTF)
+        // is authored facing +Z, so rotate 180° around Y to make her
+        // face -Z which matches the player's forward at yaw=0. The
+        // 1.15× scale brings the proportions up to a slightly larger
+        // hero-shot read in third-person without distorting the rig
+        // (uniform scale preserves bone lengths and joint angles).
         let model_pre_transform =
-            Mat4::from_rotation_y(std::f32::consts::PI) * Mat4::from_scale(Vec3::splat(1.0));
+            Mat4::from_rotation_y(std::f32::consts::PI) * Mat4::from_scale(Vec3::splat(1.15));
 
         Character {
             vbuf, ibuf, index_count: indices.len() as u32,
-            bone_buffer, bone_bind_group,
+            bone_buffer, bone_bind_group, submeshes,
             node_count, node_parents, node_base_trs,
             joint_node_indices, inverse_bind_matrices,
             clips, walk_clip,
@@ -290,7 +479,6 @@ impl Character {
     }
 
     /// Look up the duration (in seconds) of a named clip.
-    #[allow(dead_code)]
     pub fn clip_duration(&self, name: &str) -> Option<f32> {
         self.clips.get(name).map(|c| c.duration)
     }
@@ -315,7 +503,6 @@ impl Character {
         player_pos: Vec3,
         body_yaw: f32,
         samples: &[(&str, f32, f32)],
-        extra_pre: Mat4,
     ) {
         let mut local_trs = self.node_base_trs.clone();
         for &(name, time, weight) in samples {
@@ -339,7 +526,6 @@ impl Character {
 
         let model = Mat4::from_translation(player_pos)
             * Mat4::from_rotation_y(body_yaw)
-            * extra_pre
             * self.model_pre_transform;
 
         let bones: Vec<[[f32; 4]; 4]> = self
