@@ -18,6 +18,8 @@
 //!   V             — toggle 1st / 3rd person
 //!   Esc           — exit
 
+mod character;
+
 use std::sync::Arc;
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3};
@@ -29,6 +31,7 @@ use winit::{
     keyboard::{KeyCode, PhysicalKey},
     window::{CursorGrabMode, Window, WindowId},
 };
+use character::{Character, SkinVertex};
 
 // ─────────────────────────────────────────────────────────────────
 // SECTION 1 — Vertex + Uniform types
@@ -645,12 +648,73 @@ struct Input {
 struct Player {
     pos: Vec3,
     prev_pos: Vec3,
-    yaw: f32,
+    yaw: f32,    // camera yaw
     pitch: f32,
+    body_yaw: f32, // character body — smoothly rotates toward movement
     vel_y: f32,
     on_ground: bool,
     walk_t: f32,
     attack_t: f32,
+}
+
+// Animation state machine — selects which named clip plays and
+// cross-fades between consecutive states over a short transition.
+// Clips beyond "Walking" are optional: if the loaded asset doesn't
+// supply them (CesiumMan only has walking), the corresponding
+// state falls back to bind pose during the fade.
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum AnimState { Idle, Walk, Jump, Attack }
+
+fn resolve_state_clip<'a>(state: AnimState, character: &'a Character) -> Option<&'a str> {
+    match state {
+        AnimState::Idle => character.find_clip(&["Idle", "Standing", "Stand"]),
+        AnimState::Walk => character.walk_clip_name(),
+        AnimState::Jump => character.find_clip(&["Jump", "Jumping"]),
+        AnimState::Attack => character.find_clip(&["Punch", "Attack", "Slash", "SwordSlash"]),
+    }
+}
+
+struct AnimController {
+    state: AnimState,
+    state_time: f32,
+    previous: Option<AnimState>,
+    previous_time: f32,
+    transition: f32, // 0..1 — 1 = transition complete
+    transition_duration: f32,
+}
+
+impl AnimController {
+    fn new() -> Self {
+        Self {
+            state: AnimState::Idle,
+            state_time: 0.0,
+            previous: None,
+            previous_time: 0.0,
+            transition: 1.0,
+            transition_duration: 0.18,
+        }
+    }
+
+    fn set(&mut self, new_state: AnimState) {
+        if new_state == self.state {
+            return;
+        }
+        self.previous = Some(self.state);
+        self.previous_time = self.state_time;
+        self.state = new_state;
+        self.state_time = 0.0;
+        self.transition = 0.0;
+    }
+
+    fn tick(&mut self, dt: f32, state_rate: f32) {
+        self.state_time += state_rate * dt;
+        if self.transition < 1.0 {
+            self.transition = (self.transition + dt / self.transition_duration).min(1.0);
+            if self.transition >= 1.0 {
+                self.previous = None;
+            }
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -762,6 +826,109 @@ fn fs(in: VsOut) -> @location(0) vec4<f32> {
 }
 "#;
 
+const SKIN_SHADER: &str = r#"
+struct Uniforms {
+    view_proj: mat4x4<f32>,
+    light_view_proj: mat4x4<f32>,
+    camera_pos: vec4<f32>,
+    lamp_pos: vec4<f32>,
+    lamp_color: vec4<f32>,
+    moon_dir: vec4<f32>,
+    moon_color: vec4<f32>,
+    ambient_color: vec4<f32>,
+    fly_pos: array<vec4<f32>, 4>,
+    fly_color: vec4<f32>,
+};
+@group(0) @binding(0) var<uniform> u: Uniforms;
+@group(1) @binding(0) var shadow_tex: texture_depth_2d;
+@group(1) @binding(1) var shadow_samp: sampler_comparison;
+@group(2) @binding(0) var<storage, read> bones: array<mat4x4<f32>>;
+
+struct VsIn {
+    @location(0) pos: vec3<f32>,
+    @location(1) normal: vec3<f32>,
+    @location(2) color: vec3<f32>,
+    @location(3) emissive: f32,
+    @location(4) joints: vec4<u32>,
+    @location(5) weights: vec4<f32>,
+};
+struct VsOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) world: vec3<f32>,
+    @location(1) normal: vec3<f32>,
+    @location(2) color: vec3<f32>,
+    @location(3) emissive: f32,
+    @location(4) light_space: vec4<f32>,
+};
+
+@vertex
+fn vs(in: VsIn) -> VsOut {
+    let skin = bones[in.joints.x] * in.weights.x
+             + bones[in.joints.y] * in.weights.y
+             + bones[in.joints.z] * in.weights.z
+             + bones[in.joints.w] * in.weights.w;
+    let world_pos = (skin * vec4<f32>(in.pos, 1.0)).xyz;
+    let world_n = normalize((skin * vec4<f32>(in.normal, 0.0)).xyz);
+    var out: VsOut;
+    out.clip = u.view_proj * vec4<f32>(world_pos, 1.0);
+    out.world = world_pos;
+    out.normal = world_n;
+    out.color = in.color;
+    out.emissive = in.emissive;
+    out.light_space = u.light_view_proj * vec4<f32>(world_pos, 1.0);
+    return out;
+}
+
+fn sample_shadow(light_space: vec4<f32>, n_dot_l: f32) -> f32 {
+    let bias = max(0.0015 * (1.0 - n_dot_l), 0.0004);
+    let proj = light_space.xyz / light_space.w;
+    let uv = proj.xy * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5, 0.5);
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || proj.z > 1.0) {
+        return 1.0;
+    }
+    let depth = proj.z - bias;
+    var visibility = 0.0;
+    let texel = 1.0 / 1024.0;
+    for (var dy = -1; dy <= 1; dy = dy + 1) {
+        for (var dx = -1; dx <= 1; dx = dx + 1) {
+            let offset = vec2<f32>(f32(dx), f32(dy)) * texel;
+            visibility = visibility + textureSampleCompare(shadow_tex, shadow_samp, uv + offset, depth);
+        }
+    }
+    return visibility / 9.0;
+}
+
+@fragment
+fn fs(in: VsOut) -> @location(0) vec4<f32> {
+    let n = normalize(in.normal);
+    let to_lamp = u.lamp_pos.xyz - in.world;
+    let lamp_d = length(to_lamp);
+    let lamp_l = normalize(to_lamp);
+    let lamp_atten = 1.0 / (1.0 + 0.10 * lamp_d + 0.06 * lamp_d * lamp_d);
+    let lamp_diffuse = max(dot(n, lamp_l), 0.0) * u.lamp_color.xyz * lamp_atten;
+
+    let moon_l = normalize(u.moon_dir.xyz);
+    let n_dot_l = max(dot(n, moon_l), 0.0);
+    var shadow: f32 = 1.0;
+    if (u.ambient_color.w > 0.5) {
+        shadow = sample_shadow(in.light_space, n_dot_l);
+    }
+    let moon_diffuse = n_dot_l * shadow * u.moon_color.xyz;
+
+    var fly_total = vec3<f32>(0.0);
+    for (var f = 0; f < 4; f = f + 1) {
+        let to_fly = u.fly_pos[f].xyz - in.world;
+        let fd = length(to_fly);
+        let fl = normalize(to_fly);
+        let atten = 1.0 / (0.4 + 0.6 * fd + 1.8 * fd * fd);
+        fly_total = fly_total + max(dot(n, fl), 0.0) * u.fly_color.xyz * atten * u.fly_pos[f].w;
+    }
+
+    let lit = in.color * (u.ambient_color.xyz + lamp_diffuse + moon_diffuse + fly_total);
+    return vec4<f32>(lit / (lit + vec3<f32>(1.0)), 1.0);
+}
+"#;
+
 const SHADOW_SHADER: &str = r#"
 struct Uniforms {
     view_proj: mat4x4<f32>,
@@ -789,6 +956,40 @@ fn vs(@location(0) pos: vec3<f32>) -> @builtin(position) vec4<f32> {
 // reads portal_tex at the SCREEN PIXEL the fragment occupies, so
 // what shows up in the door is whatever was rendered to portal_tex
 // from the corresponding virtual camera — i.e., the other world.
+const SKIN_SHADOW_SHADER: &str = r#"
+struct Uniforms {
+    view_proj: mat4x4<f32>,
+    light_view_proj: mat4x4<f32>,
+    camera_pos: vec4<f32>,
+    lamp_pos: vec4<f32>,
+    lamp_color: vec4<f32>,
+    moon_dir: vec4<f32>,
+    moon_color: vec4<f32>,
+    ambient_color: vec4<f32>,
+    fly_pos: array<vec4<f32>, 4>,
+    fly_color: vec4<f32>,
+};
+@group(0) @binding(0) var<uniform> u: Uniforms;
+@group(1) @binding(0) var<storage, read> bones: array<mat4x4<f32>>;
+
+@vertex
+fn vs(
+    @location(0) pos: vec3<f32>,
+    @location(1) _normal: vec3<f32>,
+    @location(2) _color: vec3<f32>,
+    @location(3) _emissive: f32,
+    @location(4) joints: vec4<u32>,
+    @location(5) weights: vec4<f32>,
+) -> @builtin(position) vec4<f32> {
+    let skin = bones[joints.x] * weights.x
+             + bones[joints.y] * weights.y
+             + bones[joints.z] * weights.z
+             + bones[joints.w] * weights.w;
+    let world_pos = (skin * vec4<f32>(pos, 1.0)).xyz;
+    return u.light_view_proj * vec4<f32>(world_pos, 1.0);
+}
+"#;
+
 const PORTAL_SHADER: &str = r#"
 struct Uniforms {
     view_proj: mat4x4<f32>,
@@ -855,6 +1056,11 @@ struct Game {
     main_pipeline: wgpu::RenderPipeline,
     shadow_pipeline: wgpu::RenderPipeline,
     portal_pipeline: wgpu::RenderPipeline,
+    skin_pipeline: wgpu::RenderPipeline,
+    skin_shadow_pipeline: wgpu::RenderPipeline,
+    character: Character,
+    anim_ctrl: AnimController,
+    jump_blend: f32,
     main_bg0: wgpu::BindGroup,
     main_bg1_shadow: wgpu::BindGroup,
     shadow_bg0: wgpu::BindGroup,
@@ -1247,6 +1453,116 @@ impl Game {
             multiview: None, cache: None,
         });
 
+        // ── Skinned-character pipeline ──
+        let bone_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("bone-bgl"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+        let skin_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("skin-shader"),
+            source: wgpu::ShaderSource::Wgsl(SKIN_SHADER.into()),
+        });
+        let skin_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("skin-pl"),
+            bind_group_layouts: &[&bgl0, &bgl1_shadow, &bone_bgl],
+            push_constant_ranges: &[],
+        });
+        let skin_vattrs = [
+            wgpu::VertexAttribute { offset: 0, shader_location: 0, format: wgpu::VertexFormat::Float32x3 },
+            wgpu::VertexAttribute { offset: 12, shader_location: 1, format: wgpu::VertexFormat::Float32x3 },
+            wgpu::VertexAttribute { offset: 24, shader_location: 2, format: wgpu::VertexFormat::Float32x3 },
+            wgpu::VertexAttribute { offset: 36, shader_location: 3, format: wgpu::VertexFormat::Float32 },
+            wgpu::VertexAttribute { offset: 40, shader_location: 4, format: wgpu::VertexFormat::Uint32x4 },
+            wgpu::VertexAttribute { offset: 56, shader_location: 5, format: wgpu::VertexFormat::Float32x4 },
+        ];
+        let skin_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("skin-pipeline"),
+            layout: Some(&skin_pl),
+            vertex: wgpu::VertexState {
+                module: &skin_shader, entry_point: Some("vs"),
+                compilation_options: Default::default(),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<SkinVertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &skin_vattrs,
+                }],
+            },
+            primitive: wgpu::PrimitiveState {
+                cull_mode: Some(wgpu::Face::Back),
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
+            multisample: Default::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &skin_shader, entry_point: Some("fs"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview: None, cache: None,
+        });
+        let character = Character::load(
+            &device,
+            concat!(env!("CARGO_MANIFEST_DIR"), "/assets/character.glb"),
+            &bone_bgl,
+        );
+
+        // Shadow pipeline for the skinned character — same depth
+        // target as the regular shadow pass but reads SkinVertex
+        // and applies skinning so the cast shadow matches the
+        // animated pose.
+        let skin_shadow_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("skin-shadow-shader"),
+            source: wgpu::ShaderSource::Wgsl(SKIN_SHADOW_SHADER.into()),
+        });
+        let skin_shadow_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("skin-shadow-pl"),
+            bind_group_layouts: &[&bgl0, &bone_bgl],
+            push_constant_ranges: &[],
+        });
+        let skin_shadow_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("skin-shadow-pipeline"),
+            layout: Some(&skin_shadow_pl),
+            vertex: wgpu::VertexState {
+                module: &skin_shadow_shader, entry_point: Some("vs"),
+                compilation_options: Default::default(),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<SkinVertex>() as u64,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &skin_vattrs,
+                }],
+            },
+            primitive: wgpu::PrimitiveState { cull_mode: Some(wgpu::Face::Back), ..Default::default() },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: true,
+                depth_compare: wgpu::CompareFunction::Less,
+                stencil: Default::default(),
+                bias: wgpu::DepthBiasState { constant: 2, slope_scale: 2.0, clamp: 0.0 },
+            }),
+            multisample: Default::default(),
+            fragment: None,
+            multiview: None, cache: None,
+        });
+
         let _ = window
             .set_cursor_grab(CursorGrabMode::Locked)
             .or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined));
@@ -1260,6 +1576,9 @@ impl Game {
             portal_sampler,
             bgl1_portal,
             main_pipeline, shadow_pipeline, portal_pipeline,
+            skin_pipeline, skin_shadow_pipeline, character,
+            anim_ctrl: AnimController::new(),
+            jump_blend: 0.0,
             main_bg0, main_bg1_shadow, shadow_bg0,
             uniform_buf,
             world_a: WorldGpu { vbuf: vbuf_a, ibuf: ibuf_a, index_count: ia.len() as u32, env: env_a },
@@ -1275,6 +1594,7 @@ impl Game {
                 // forward = (-sin yaw, 0, -cos yaw) ≈ (-0.408, 0, -0.913)
                 yaw: 0.42,
                 pitch: 0.0,
+                body_yaw: 0.42,
                 vel_y: 0.0,
                 on_ground: true,
                 walk_t: 0.0,
@@ -1361,8 +1681,18 @@ impl Game {
 
         self.player.prev_pos = self.player.pos;
         if moving {
-            self.player.pos += m.normalize() * 3.0 * dt;
+            let m_norm = m.normalize();
+            self.player.pos += m_norm * 3.0 * dt;
             self.player.walk_t += dt;
+            // Target body yaw from movement direction (world space).
+            // forward(yaw) = (-sin yaw, 0, -cos yaw), so the yaw that
+            // makes forward equal m_norm is atan2(-m.x, -m.z).
+            let target_body_yaw = (-m_norm.x).atan2(-m_norm.z);
+            let tau = std::f32::consts::TAU;
+            let diff = (target_body_yaw - self.player.body_yaw + std::f32::consts::PI)
+                .rem_euclid(tau) - std::f32::consts::PI;
+            let alpha = (10.0 * dt).min(1.0);
+            self.player.body_yaw += diff * alpha;
         }
 
         if self.input.jump_pressed && self.player.on_ground {
@@ -1492,9 +1822,61 @@ impl Game {
             self.player.pos, self.player.yaw,
             self.player.walk_t, self.player.attack_t, moving,
         );
-        let player_index_count = ci.len() as u32;
+        let _player_index_count = ci.len() as u32;
         self.queue.write_buffer(&self.player_vbuf, 0, bytemuck::cast_slice(&cv));
         self.queue.write_buffer(&self.player_ibuf, 0, bytemuck::cast_slice(&ci));
+
+        // Animation state machine — pick a target state from the
+        // player's situation, hand it to the controller (which
+        // handles the cross-fade), then assemble weighted clip
+        // samples and let the skin shader pose the body.
+        let target_state = if self.player.attack_t > 0.0 {
+            AnimState::Attack
+        } else if !self.player.on_ground {
+            AnimState::Jump
+        } else if moving {
+            AnimState::Walk
+        } else {
+            AnimState::Idle
+        };
+        self.anim_ctrl.set(target_state);
+        // Walk advances proportional to ground distance; everything
+        // else plays at wall-clock rate.
+        const NOMINAL_WALK_SPEED: f32 = 1.4;
+        const PLAYER_SPEED: f32 = 3.0;
+        let state_rate = match self.anim_ctrl.state {
+            AnimState::Walk => PLAYER_SPEED / NOMINAL_WALK_SPEED,
+            _ => 1.0,
+        };
+        self.anim_ctrl.tick(dt, state_rate);
+
+        let mut samples: Vec<(&str, f32, f32)> = Vec::new();
+        if let Some(prev) = self.anim_ctrl.previous {
+            if let Some(name) = resolve_state_clip(prev, &self.character) {
+                samples.push((name, self.anim_ctrl.previous_time, 1.0 - self.anim_ctrl.transition));
+            }
+        }
+        if let Some(name) = resolve_state_clip(self.anim_ctrl.state, &self.character) {
+            samples.push((name, self.anim_ctrl.state_time, self.anim_ctrl.transition));
+        }
+        // Procedural jump pose — when no Jump clip is available
+        // we tilt the character forward and squash it slightly on
+        // Y to suggest a tucked leap. jump_blend rises while in
+        // the air and falls back smoothly on landing.
+        let target_jump = if !self.player.on_ground { 1.0_f32 } else { 0.0 };
+        let jb_alpha = (10.0 * dt).min(1.0);
+        self.jump_blend += (target_jump - self.jump_blend) * jb_alpha;
+        let tilt = -0.45 * self.jump_blend;
+        let squash = 1.0 - 0.10 * self.jump_blend;
+        let extra_pre = Mat4::from_rotation_x(tilt)
+            * Mat4::from_scale(Vec3::new(1.0, squash, 1.0));
+        self.character.update(
+            &self.queue,
+            self.player.pos,
+            self.player.body_yaw,
+            &samples,
+            extra_pre,
+        );
 
         // Fireflies — step their state forward, then rebuild a
         // separate mesh per world (so a firefly only appears in the
@@ -1558,9 +1940,13 @@ impl Game {
                 pass.set_vertex_buffer(0, portal_src.vbuf.slice(..));
                 pass.set_index_buffer(portal_src.ibuf.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..portal_src.index_count, 0, 0..1);
-                pass.set_vertex_buffer(0, self.player_vbuf.slice(..));
-                pass.set_index_buffer(self.player_ibuf.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..player_index_count, 0, 0..1);
+                // Skinned character — depth-only skin shader.
+                pass.set_pipeline(&self.skin_shadow_pipeline);
+                pass.set_bind_group(0, &self.shadow_bg0, &[]);
+                pass.set_bind_group(1, &self.character.bone_bind_group, &[]);
+                pass.set_vertex_buffer(0, self.character.vbuf.slice(..));
+                pass.set_index_buffer(self.character.ibuf.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..self.character.index_count, 0, 0..1);
             }
 
             let u_portal = build_uniforms(virt_view_proj, &portal_src.env, &cam, &self.player.pos, 1.0, &self.fireflies, portal_src_world);
@@ -1594,9 +1980,15 @@ impl Game {
                 pass.set_index_buffer(portal_src.ibuf.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..portal_src.index_count, 0, 0..1);
                 if self.third_person {
-                    pass.set_vertex_buffer(0, self.player_vbuf.slice(..));
-                    pass.set_index_buffer(self.player_ibuf.slice(..), wgpu::IndexFormat::Uint32);
-                    pass.draw_indexed(0..player_index_count, 0, 0..1);
+                    pass.set_pipeline(&self.skin_pipeline);
+                    pass.set_bind_group(0, &self.main_bg0, &[]);
+                    pass.set_bind_group(1, &self.main_bg1_shadow, &[]);
+                    pass.set_bind_group(2, &self.character.bone_bind_group, &[]);
+                    pass.set_vertex_buffer(0, self.character.vbuf.slice(..));
+                    pass.set_index_buffer(self.character.ibuf.slice(..), wgpu::IndexFormat::Uint32);
+                    pass.draw_indexed(0..self.character.index_count, 0, 0..1);
+                    pass.set_pipeline(&self.main_pipeline);
+                    pass.set_bind_group(1, &self.main_bg1_shadow, &[]);
                 }
                 let fc = self.firefly_counts[portal_src_world as usize];
                 if fc > 0 {
@@ -1637,9 +2029,13 @@ impl Game {
             pass.set_vertex_buffer(0, self.door_vbuf.slice(..));
             pass.set_index_buffer(self.door_ibuf.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..self.door_index_count, 0, 0..1);
-            pass.set_vertex_buffer(0, self.player_vbuf.slice(..));
-            pass.set_index_buffer(self.player_ibuf.slice(..), wgpu::IndexFormat::Uint32);
-            pass.draw_indexed(0..player_index_count, 0, 0..1);
+            // Skinned character — depth-only skin shader.
+            pass.set_pipeline(&self.skin_shadow_pipeline);
+            pass.set_bind_group(0, &self.shadow_bg0, &[]);
+            pass.set_bind_group(1, &self.character.bone_bind_group, &[]);
+            pass.set_vertex_buffer(0, self.character.vbuf.slice(..));
+            pass.set_index_buffer(self.character.ibuf.slice(..), wgpu::IndexFormat::Uint32);
+            pass.draw_indexed(0..self.character.index_count, 0, 0..1);
         }
 
         // ── PASS 3: main render of CURRENT world + portal quad ──
@@ -1680,17 +2076,18 @@ impl Game {
             pass.set_vertex_buffer(0, self.door_vbuf.slice(..));
             pass.set_index_buffer(self.door_ibuf.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..self.door_index_count, 0, 0..1);
-            // Character — drawn in BOTH the main pass and the portal
-            // pass so that wherever the character's screen projection
-            // ends up (over the portal or beside it) it stays
-            // visible. When it's behind the portal quad in depth,
-            // the quad's sample of portal_color_view supplies the
-            // character pixels; when it's outside the quad's screen
-            // area, the main pass draw shows it directly.
+            // Skinned character — switches pipeline + binds bone matrices.
             if self.third_person {
-                pass.set_vertex_buffer(0, self.player_vbuf.slice(..));
-                pass.set_index_buffer(self.player_ibuf.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..player_index_count, 0, 0..1);
+                pass.set_pipeline(&self.skin_pipeline);
+                pass.set_bind_group(0, &self.main_bg0, &[]);
+                pass.set_bind_group(1, &self.main_bg1_shadow, &[]);
+                pass.set_bind_group(2, &self.character.bone_bind_group, &[]);
+                pass.set_vertex_buffer(0, self.character.vbuf.slice(..));
+                pass.set_index_buffer(self.character.ibuf.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..self.character.index_count, 0, 0..1);
+                // Restore main pipeline for the fireflies and portal quad below.
+                pass.set_pipeline(&self.main_pipeline);
+                pass.set_bind_group(1, &self.main_bg1_shadow, &[]);
             }
             // Fireflies — only those currently tagged with cur_world
             // appear in the main pass. The others are still in the
