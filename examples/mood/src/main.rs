@@ -1186,348 +1186,26 @@ impl Game {
             mk_portal_bg(&portal_color_views[1]),
         ];
 
-        // ── Shaders + pipelines ──
-        let main_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("main-shader"),
-            source: wgpu::ShaderSource::Wgsl(MAIN_SHADER.into()),
-        });
-        let shadow_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("shadow-shader"),
-            source: wgpu::ShaderSource::Wgsl(SHADOW_SHADER.into()),
-        });
-        let portal_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("portal-shader"),
-            source: wgpu::ShaderSource::Wgsl(PORTAL_SHADER.into()),
-        });
-
-        let main_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("main-pl"),
-            bind_group_layouts: &[&bgl0, &bgl1_shadow],
-            push_constant_ranges: &[],
-        });
-        let shadow_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("shadow-pl"),
-            bind_group_layouts: &[&bgl0],
-            push_constant_ranges: &[],
-        });
-        let portal_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("portal-pl"),
-            bind_group_layouts: &[&bgl0, &bgl1_portal],
-            push_constant_ranges: &[],
-        });
-
-        let vattrs = [
-            wgpu::VertexAttribute { offset: 0, shader_location: 0, format: wgpu::VertexFormat::Float32x3 },
-            wgpu::VertexAttribute { offset: 12, shader_location: 1, format: wgpu::VertexFormat::Float32x3 },
-            wgpu::VertexAttribute { offset: 24, shader_location: 2, format: wgpu::VertexFormat::Float32x3 },
-            wgpu::VertexAttribute { offset: 36, shader_location: 3, format: wgpu::VertexFormat::Float32 },
-        ];
-
-        let main_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("main-pipeline"),
-            layout: Some(&main_pl),
-            vertex: wgpu::VertexState {
-                module: &main_shader, entry_point: Some("vs"),
-                compilation_options: Default::default(),
-                buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<Vertex>() as u64,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &vattrs,
-                }],
-            },
-            primitive: wgpu::PrimitiveState {
-                cull_mode: Some(wgpu::Face::Back),
-                ..Default::default()
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Less,
-                stencil: Default::default(),
-                bias: Default::default(),
-            }),
-            multisample: Default::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &main_shader, entry_point: Some("fs"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::REPLACE),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview: None, cache: None,
-        });
-
-        let shadow_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("shadow-pipeline"),
-            layout: Some(&shadow_pl),
-            vertex: wgpu::VertexState {
-                module: &shadow_shader, entry_point: Some("vs"),
-                compilation_options: Default::default(),
-                buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<Vertex>() as u64,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &vattrs,
-                }],
-            },
-            primitive: wgpu::PrimitiveState { cull_mode: Some(wgpu::Face::Back), ..Default::default() },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Less,
-                stencil: Default::default(),
-                bias: wgpu::DepthBiasState { constant: 2, slope_scale: 2.0, clamp: 0.0 },
-            }),
-            multisample: Default::default(),
-            fragment: None,
-            multiview: None, cache: None,
-        });
-
-        let portal_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("portal-pipeline"),
-            layout: Some(&portal_pl),
-            vertex: wgpu::VertexState {
-                module: &portal_shader, entry_point: Some("vs"),
-                compilation_options: Default::default(),
-                buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<Vertex>() as u64,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &vattrs,
-                }],
-            },
-            primitive: wgpu::PrimitiveState {
-                // No culling on the portal quad — visible from both sides.
-                cull_mode: None,
-                ..Default::default()
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Less,
-                stencil: Default::default(),
-                bias: Default::default(),
-            }),
-            multisample: Default::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &portal_shader, entry_point: Some("fs"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::REPLACE),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview: None, cache: None,
-        });
-
-        // ── Skinned-character pipeline ──
-        // Group 2 carries everything the character needs that isn't
-        // already in the global uniforms: bone matrices (vertex
-        // shader), and the diffuse texture + sampler (fragment).
-        let bone_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("char-bgl"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-        });
-        let skin_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("skin-shader"),
-            source: wgpu::ShaderSource::Wgsl(SKIN_SHADER.into()),
-        });
-        let skin_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("skin-pl"),
-            bind_group_layouts: &[&bgl0, &bgl1_shadow, &bone_bgl],
-            push_constant_ranges: &[],
-        });
-        let skin_vattrs = [
-            wgpu::VertexAttribute { offset: 0,  shader_location: 0, format: wgpu::VertexFormat::Float32x3 },
-            wgpu::VertexAttribute { offset: 12, shader_location: 1, format: wgpu::VertexFormat::Float32x3 },
-            wgpu::VertexAttribute { offset: 24, shader_location: 2, format: wgpu::VertexFormat::Float32x3 },
-            wgpu::VertexAttribute { offset: 36, shader_location: 3, format: wgpu::VertexFormat::Float32 },
-            wgpu::VertexAttribute { offset: 40, shader_location: 4, format: wgpu::VertexFormat::Uint32x4 },
-            wgpu::VertexAttribute { offset: 56, shader_location: 5, format: wgpu::VertexFormat::Float32x4 },
-            wgpu::VertexAttribute { offset: 72, shader_location: 6, format: wgpu::VertexFormat::Float32x2 },
-        ];
-        let skin_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("skin-pipeline"),
-            layout: Some(&skin_pl),
-            vertex: wgpu::VertexState {
-                module: &skin_shader, entry_point: Some("vs"),
-                compilation_options: Default::default(),
-                buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<SkinVertex>() as u64,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &skin_vattrs,
-                }],
-            },
-            primitive: wgpu::PrimitiveState {
-                cull_mode: Some(wgpu::Face::Back),
-                ..Default::default()
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Less,
-                stencil: Default::default(),
-                bias: Default::default(),
-            }),
-            multisample: Default::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &skin_shader, entry_point: Some("fs"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::REPLACE),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview: None, cache: None,
-        });
+        // ── Pipelines ──
+        let main_pipeline        = build_main_pipeline       (&device, format, &bgl0, &bgl1_shadow);
+        let shadow_pipeline      = build_shadow_pipeline     (&device, &bgl0);
+        let portal_pipeline      = build_portal_pipeline     (&device, format, &bgl0, &bgl1_portal);
+        let bone_bgl             = build_bone_bgl            (&device);
+        let skin_pipeline        = build_skin_pipeline       (&device, format, &bgl0, &bgl1_shadow, &bone_bgl);
+        let skin_shadow_pipeline = build_skin_shadow_pipeline(&device, &bgl0, &bone_bgl);
         let character = Character::load(
             &device,
             &queue,
             concat!(env!("CARGO_MANIFEST_DIR"), "/assets/character.glb"),
             &bone_bgl,
         );
+        let grass_pipeline       = build_grass_pipeline      (&device, format, &bgl0);
+        let water_pipeline       = build_water_pipeline      (&device, format, &bgl0);
+        let sand_pipeline        = build_sand_pipeline       (&device, format, &bgl0);
+        let decal_pipeline       = build_decal_pipeline      (&device, format, &bgl0);
+        let fade_pipeline        = build_fade_pipeline       (&device, format, &bgl0, &bgl1_portal);
 
-        // Shadow pipeline for the skinned character — same depth
-        // target as the regular shadow pass but reads SkinVertex
-        // and applies skinning so the cast shadow matches the
-        // animated pose.
-        let skin_shadow_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("skin-shadow-shader"),
-            source: wgpu::ShaderSource::Wgsl(SKIN_SHADOW_SHADER.into()),
-        });
-        let skin_shadow_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("skin-shadow-pl"),
-            bind_group_layouts: &[&bgl0, &bone_bgl],
-            push_constant_ranges: &[],
-        });
-        let skin_shadow_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("skin-shadow-pipeline"),
-            layout: Some(&skin_shadow_pl),
-            vertex: wgpu::VertexState {
-                module: &skin_shadow_shader, entry_point: Some("vs"),
-                compilation_options: Default::default(),
-                buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<SkinVertex>() as u64,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &skin_vattrs,
-                }],
-            },
-            primitive: wgpu::PrimitiveState { cull_mode: Some(wgpu::Face::Back), ..Default::default() },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Less,
-                stencil: Default::default(),
-                bias: wgpu::DepthBiasState { constant: 2, slope_scale: 2.0, clamp: 0.0 },
-            }),
-            multisample: Default::default(),
-            fragment: None,
-            multiview: None, cache: None,
-        });
-
-        // ── Grass / water / sand / decal pipelines ──
-        //
-        // All four bind only bgl0 (the global Uniforms buffer) — they
-        // don't need shadow maps or per-instance data; everything
-        // varies per-vertex. Vertex layouts are minimal: grass has
-        // its per-blade bend metadata, water and sand only need pos,
-        // decals carry uv + age01 for the fade.
-        let env_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("env-pl"),
-            bind_group_layouts: &[&bgl0],
-            push_constant_ranges: &[],
-        });
-        let depth_state_opaque = wgpu::DepthStencilState {
-            format: wgpu::TextureFormat::Depth32Float,
-            depth_write_enabled: true,
-            depth_compare: wgpu::CompareFunction::Less,
-            stencil: Default::default(),
-            bias: Default::default(),
-        };
-        let depth_state_overlay = wgpu::DepthStencilState {
-            format: wgpu::TextureFormat::Depth32Float,
-            // Decals lie just above the sand — read depth so they
-            // don't draw through other geometry, but don't write back
-            // (so successive decals can blend without z-fighting).
-            depth_write_enabled: false,
-            depth_compare: wgpu::CompareFunction::Less,
-            stencil: Default::default(),
-            bias: wgpu::DepthBiasState {
-                constant: -2,
-                slope_scale: -1.0,
-                clamp: 0.0,
-            },
-        };
-
-        // -- Grass --
-        let grass_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("grass-shader"),
-            source: wgpu::ShaderSource::Wgsl(GRASS_SHADER.into()),
-        });
-        let grass_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("grass-pipeline"),
-            layout: Some(&env_pl),
-            vertex: wgpu::VertexState {
-                module: &grass_shader, entry_point: Some("vs"),
-                compilation_options: Default::default(),
-                buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<GrassVertex>() as u64,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &[
-                        wgpu::VertexAttribute { offset: 0,  shader_location: 0, format: wgpu::VertexFormat::Float32x3 },
-                        wgpu::VertexAttribute { offset: 12, shader_location: 1, format: wgpu::VertexFormat::Float32 },
-                        wgpu::VertexAttribute { offset: 16, shader_location: 2, format: wgpu::VertexFormat::Float32x2 },
-                        wgpu::VertexAttribute { offset: 24, shader_location: 3, format: wgpu::VertexFormat::Float32 },
-                    ],
-                }],
-            },
-            primitive: wgpu::PrimitiveState {
-                // No culling — blades are paper-thin and viewable from both sides.
-                cull_mode: None,
-                ..Default::default()
-            },
-            depth_stencil: Some(depth_state_opaque.clone()),
-            multisample: Default::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &grass_shader, entry_point: Some("fs"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::REPLACE),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview: None, cache: None,
-        });
+        // ── Per-feature meshes (vertex/index buffers) ──
         let (grass_verts, grass_indices) = build_grass(GRASS_MIN, GRASS_MAX, GRASS_DENSITY);
         let grass_vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("grass-vb"),
@@ -1541,39 +1219,6 @@ impl Game {
         });
         let grass_index_count = grass_indices.len() as u32;
 
-        // -- Water --
-        let water_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("water-shader"),
-            source: wgpu::ShaderSource::Wgsl(WATER_SHADER.into()),
-        });
-        let water_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("water-pipeline"),
-            layout: Some(&env_pl),
-            vertex: wgpu::VertexState {
-                module: &water_shader, entry_point: Some("vs"),
-                compilation_options: Default::default(),
-                buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<PosVertex>() as u64,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &[
-                        wgpu::VertexAttribute { offset: 0, shader_location: 0, format: wgpu::VertexFormat::Float32x3 },
-                    ],
-                }],
-            },
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: Some(depth_state_opaque.clone()),
-            multisample: Default::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &water_shader, entry_point: Some("fs"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview: None, cache: None,
-        });
         let (water_verts, water_indices) = build_water(WATER_MIN, WATER_MAX, WATER_LEVEL, WATER_GRID);
         let water_vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("water-vb"),
@@ -1587,39 +1232,6 @@ impl Game {
         });
         let water_index_count = water_indices.len() as u32;
 
-        // -- Sand --
-        let sand_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("sand-shader"),
-            source: wgpu::ShaderSource::Wgsl(SAND_SHADER.into()),
-        });
-        let sand_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("sand-pipeline"),
-            layout: Some(&env_pl),
-            vertex: wgpu::VertexState {
-                module: &sand_shader, entry_point: Some("vs"),
-                compilation_options: Default::default(),
-                buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<PosVertex>() as u64,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &[
-                        wgpu::VertexAttribute { offset: 0, shader_location: 0, format: wgpu::VertexFormat::Float32x3 },
-                    ],
-                }],
-            },
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: Some(depth_state_opaque.clone()),
-            multisample: Default::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &sand_shader, entry_point: Some("fs"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::REPLACE),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview: None, cache: None,
-        });
         let (sand_verts, sand_indices) = build_sand(SAND_MIN, SAND_MAX, SAND_Y);
         let sand_vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("sand-vb"),
@@ -1633,44 +1245,6 @@ impl Game {
         });
         let sand_index_count = sand_indices.len() as u32;
 
-        // -- Decals --
-        let decal_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("decal-shader"),
-            source: wgpu::ShaderSource::Wgsl(DECAL_SHADER.into()),
-        });
-        let decal_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("decal-pipeline"),
-            layout: Some(&env_pl),
-            vertex: wgpu::VertexState {
-                module: &decal_shader, entry_point: Some("vs"),
-                compilation_options: Default::default(),
-                buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<DecalVertex>() as u64,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &[
-                        wgpu::VertexAttribute { offset: 0,  shader_location: 0, format: wgpu::VertexFormat::Float32x3 },
-                        wgpu::VertexAttribute { offset: 12, shader_location: 1, format: wgpu::VertexFormat::Float32x2 },
-                        wgpu::VertexAttribute { offset: 20, shader_location: 2, format: wgpu::VertexFormat::Float32 },
-                    ],
-                }],
-            },
-            primitive: wgpu::PrimitiveState {
-                cull_mode: None,
-                ..Default::default()
-            },
-            depth_stencil: Some(depth_state_overlay),
-            multisample: Default::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &decal_shader, entry_point: Some("fs"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview: None, cache: None,
-        });
         let decal_vbuf_capacity = MAX_FOOTPRINTS * 4;
         let decal_vbuf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("decal-vb"),
@@ -1685,57 +1259,7 @@ impl Game {
             mapped_at_creation: false,
         });
 
-        // -- Door-transition overlay -- (NDC triangle sampling the
-        //    destination room's portal texture with uniform alpha).
-        let fade_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("fade-shader"),
-            source: wgpu::ShaderSource::Wgsl(FADE_SHADER.into()),
-        });
-        let fade_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("fade-pl"),
-            bind_group_layouts: &[&bgl0, &bgl1_portal],
-            push_constant_ranges: &[],
-        });
-        let fade_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("fade-pipeline"),
-            layout: Some(&fade_pl),
-            vertex: wgpu::VertexState {
-                module: &fade_shader, entry_point: Some("vs"),
-                compilation_options: Default::default(),
-                buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<PosVertex>() as u64,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &[
-                        wgpu::VertexAttribute { offset: 0, shader_location: 0, format: wgpu::VertexFormat::Float32x3 },
-                    ],
-                }],
-            },
-            primitive: wgpu::PrimitiveState {
-                cull_mode: None,
-                ..Default::default()
-            },
-            // Skip depth — the overlay sits in NDC and should always paint over the scene.
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: false,
-                depth_compare: wgpu::CompareFunction::Always,
-                stencil: Default::default(),
-                bias: Default::default(),
-            }),
-            multisample: Default::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &fade_shader, entry_point: Some("fs"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview: None, cache: None,
-        });
-        // Three vertices forming a triangle that covers the whole screen
-        // in NDC: (-1,-1), (3,-1), (-1,3).
+        // NDC triangle (oversized so it covers the screen) for the fade overlay.
         let fade_quad = [
             PosVertex { pos: [-1.0, -1.0, 0.0] },
             PosVertex { pos: [ 3.0, -1.0, 0.0] },
@@ -2567,6 +2091,481 @@ impl Game {
             fade,
         }
     }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Pipeline builders
+//
+// Each `build_*_pipeline` is self-contained: it compiles its shader,
+// creates the pipeline layout from the bind-group layouts it needs,
+// and returns the final `RenderPipeline`. Game::new just calls each
+// one with the relevant BGLs — keeps the construction declarative.
+// ─────────────────────────────────────────────────────────────────
+
+const VERTEX_ATTRS: [wgpu::VertexAttribute; 4] = [
+    wgpu::VertexAttribute { offset: 0,  shader_location: 0, format: wgpu::VertexFormat::Float32x3 },
+    wgpu::VertexAttribute { offset: 12, shader_location: 1, format: wgpu::VertexFormat::Float32x3 },
+    wgpu::VertexAttribute { offset: 24, shader_location: 2, format: wgpu::VertexFormat::Float32x3 },
+    wgpu::VertexAttribute { offset: 36, shader_location: 3, format: wgpu::VertexFormat::Float32 },
+];
+
+const SKIN_VERTEX_ATTRS: [wgpu::VertexAttribute; 7] = [
+    wgpu::VertexAttribute { offset: 0,  shader_location: 0, format: wgpu::VertexFormat::Float32x3 },
+    wgpu::VertexAttribute { offset: 12, shader_location: 1, format: wgpu::VertexFormat::Float32x3 },
+    wgpu::VertexAttribute { offset: 24, shader_location: 2, format: wgpu::VertexFormat::Float32x3 },
+    wgpu::VertexAttribute { offset: 36, shader_location: 3, format: wgpu::VertexFormat::Float32 },
+    wgpu::VertexAttribute { offset: 40, shader_location: 4, format: wgpu::VertexFormat::Uint32x4 },
+    wgpu::VertexAttribute { offset: 56, shader_location: 5, format: wgpu::VertexFormat::Float32x4 },
+    wgpu::VertexAttribute { offset: 72, shader_location: 6, format: wgpu::VertexFormat::Float32x2 },
+];
+
+fn make_shader(device: &wgpu::Device, label: &str, src: &str) -> wgpu::ShaderModule {
+    device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some(label),
+        source: wgpu::ShaderSource::Wgsl(src.into()),
+    })
+}
+
+fn make_layout(
+    device: &wgpu::Device,
+    label: &str,
+    bgls: &[&wgpu::BindGroupLayout],
+) -> wgpu::PipelineLayout {
+    device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some(label),
+        bind_group_layouts: bgls,
+        push_constant_ranges: &[],
+    })
+}
+
+fn depth_opaque() -> wgpu::DepthStencilState {
+    wgpu::DepthStencilState {
+        format: wgpu::TextureFormat::Depth32Float,
+        depth_write_enabled: true,
+        depth_compare: wgpu::CompareFunction::Less,
+        stencil: Default::default(),
+        bias: Default::default(),
+    }
+}
+
+fn build_main_pipeline(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    bgl0: &wgpu::BindGroupLayout,
+    bgl1_shadow: &wgpu::BindGroupLayout,
+) -> wgpu::RenderPipeline {
+    let shader = make_shader(device, "main-shader", MAIN_SHADER);
+    let layout = make_layout(device, "main-pl", &[bgl0, bgl1_shadow]);
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("main-pipeline"),
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module: &shader, entry_point: Some("vs"),
+            compilation_options: Default::default(),
+            buffers: &[wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<Vertex>() as u64,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &VERTEX_ATTRS,
+            }],
+        },
+        primitive: wgpu::PrimitiveState { cull_mode: Some(wgpu::Face::Back), ..Default::default() },
+        depth_stencil: Some(depth_opaque()),
+        multisample: Default::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &shader, entry_point: Some("fs"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(wgpu::BlendState::REPLACE),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview: None, cache: None,
+    })
+}
+
+fn build_shadow_pipeline(
+    device: &wgpu::Device,
+    bgl0: &wgpu::BindGroupLayout,
+) -> wgpu::RenderPipeline {
+    let shader = make_shader(device, "shadow-shader", SHADOW_SHADER);
+    let layout = make_layout(device, "shadow-pl", &[bgl0]);
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("shadow-pipeline"),
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module: &shader, entry_point: Some("vs"),
+            compilation_options: Default::default(),
+            buffers: &[wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<Vertex>() as u64,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &VERTEX_ATTRS,
+            }],
+        },
+        primitive: wgpu::PrimitiveState { cull_mode: Some(wgpu::Face::Back), ..Default::default() },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: wgpu::TextureFormat::Depth32Float,
+            depth_write_enabled: true,
+            depth_compare: wgpu::CompareFunction::Less,
+            stencil: Default::default(),
+            bias: wgpu::DepthBiasState { constant: 2, slope_scale: 2.0, clamp: 0.0 },
+        }),
+        multisample: Default::default(),
+        fragment: None,
+        multiview: None, cache: None,
+    })
+}
+
+fn build_portal_pipeline(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    bgl0: &wgpu::BindGroupLayout,
+    bgl1_portal: &wgpu::BindGroupLayout,
+) -> wgpu::RenderPipeline {
+    let shader = make_shader(device, "portal-shader", PORTAL_SHADER);
+    let layout = make_layout(device, "portal-pl", &[bgl0, bgl1_portal]);
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("portal-pipeline"),
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module: &shader, entry_point: Some("vs"),
+            compilation_options: Default::default(),
+            buffers: &[wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<Vertex>() as u64,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &VERTEX_ATTRS,
+            }],
+        },
+        // No culling on the portal quad — visible from both sides.
+        primitive: wgpu::PrimitiveState { cull_mode: None, ..Default::default() },
+        depth_stencil: Some(depth_opaque()),
+        multisample: Default::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &shader, entry_point: Some("fs"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(wgpu::BlendState::REPLACE),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview: None, cache: None,
+    })
+}
+
+fn build_skin_pipeline(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    bgl0: &wgpu::BindGroupLayout,
+    bgl1_shadow: &wgpu::BindGroupLayout,
+    bone_bgl: &wgpu::BindGroupLayout,
+) -> wgpu::RenderPipeline {
+    let shader = make_shader(device, "skin-shader", SKIN_SHADER);
+    let layout = make_layout(device, "skin-pl", &[bgl0, bgl1_shadow, bone_bgl]);
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("skin-pipeline"),
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module: &shader, entry_point: Some("vs"),
+            compilation_options: Default::default(),
+            buffers: &[wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<SkinVertex>() as u64,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &SKIN_VERTEX_ATTRS,
+            }],
+        },
+        primitive: wgpu::PrimitiveState { cull_mode: Some(wgpu::Face::Back), ..Default::default() },
+        depth_stencil: Some(depth_opaque()),
+        multisample: Default::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &shader, entry_point: Some("fs"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(wgpu::BlendState::REPLACE),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview: None, cache: None,
+    })
+}
+
+fn build_skin_shadow_pipeline(
+    device: &wgpu::Device,
+    bgl0: &wgpu::BindGroupLayout,
+    bone_bgl: &wgpu::BindGroupLayout,
+) -> wgpu::RenderPipeline {
+    let shader = make_shader(device, "skin-shadow-shader", SKIN_SHADOW_SHADER);
+    let layout = make_layout(device, "skin-shadow-pl", &[bgl0, bone_bgl]);
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("skin-shadow-pipeline"),
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module: &shader, entry_point: Some("vs"),
+            compilation_options: Default::default(),
+            buffers: &[wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<SkinVertex>() as u64,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &SKIN_VERTEX_ATTRS,
+            }],
+        },
+        primitive: wgpu::PrimitiveState { cull_mode: Some(wgpu::Face::Back), ..Default::default() },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: wgpu::TextureFormat::Depth32Float,
+            depth_write_enabled: true,
+            depth_compare: wgpu::CompareFunction::Less,
+            stencil: Default::default(),
+            bias: wgpu::DepthBiasState { constant: 2, slope_scale: 2.0, clamp: 0.0 },
+        }),
+        multisample: Default::default(),
+        fragment: None,
+        multiview: None, cache: None,
+    })
+}
+
+/// Bind-group layout for the skinned character's per-mesh resources
+/// (bone storage + diffuse texture + sampler).
+fn build_bone_bgl(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("char-bgl"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ],
+    })
+}
+
+fn build_grass_pipeline(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    bgl0: &wgpu::BindGroupLayout,
+) -> wgpu::RenderPipeline {
+    let shader = make_shader(device, "grass-shader", GRASS_SHADER);
+    let layout = make_layout(device, "grass-pl", &[bgl0]);
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("grass-pipeline"),
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module: &shader, entry_point: Some("vs"),
+            compilation_options: Default::default(),
+            buffers: &[wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<GrassVertex>() as u64,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &[
+                    wgpu::VertexAttribute { offset: 0,  shader_location: 0, format: wgpu::VertexFormat::Float32x3 },
+                    wgpu::VertexAttribute { offset: 12, shader_location: 1, format: wgpu::VertexFormat::Float32 },
+                    wgpu::VertexAttribute { offset: 16, shader_location: 2, format: wgpu::VertexFormat::Float32x2 },
+                    wgpu::VertexAttribute { offset: 24, shader_location: 3, format: wgpu::VertexFormat::Float32 },
+                ],
+            }],
+        },
+        // No culling — blades are paper-thin and viewable from both sides.
+        primitive: wgpu::PrimitiveState { cull_mode: None, ..Default::default() },
+        depth_stencil: Some(depth_opaque()),
+        multisample: Default::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &shader, entry_point: Some("fs"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(wgpu::BlendState::REPLACE),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview: None, cache: None,
+    })
+}
+
+fn build_water_pipeline(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    bgl0: &wgpu::BindGroupLayout,
+) -> wgpu::RenderPipeline {
+    let shader = make_shader(device, "water-shader", WATER_SHADER);
+    let layout = make_layout(device, "water-pl", &[bgl0]);
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("water-pipeline"),
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module: &shader, entry_point: Some("vs"),
+            compilation_options: Default::default(),
+            buffers: &[wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<PosVertex>() as u64,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &[
+                    wgpu::VertexAttribute { offset: 0, shader_location: 0, format: wgpu::VertexFormat::Float32x3 },
+                ],
+            }],
+        },
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: Some(depth_opaque()),
+        multisample: Default::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &shader, entry_point: Some("fs"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview: None, cache: None,
+    })
+}
+
+fn build_sand_pipeline(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    bgl0: &wgpu::BindGroupLayout,
+) -> wgpu::RenderPipeline {
+    let shader = make_shader(device, "sand-shader", SAND_SHADER);
+    let layout = make_layout(device, "sand-pl", &[bgl0]);
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("sand-pipeline"),
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module: &shader, entry_point: Some("vs"),
+            compilation_options: Default::default(),
+            buffers: &[wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<PosVertex>() as u64,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &[
+                    wgpu::VertexAttribute { offset: 0, shader_location: 0, format: wgpu::VertexFormat::Float32x3 },
+                ],
+            }],
+        },
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: Some(depth_opaque()),
+        multisample: Default::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &shader, entry_point: Some("fs"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(wgpu::BlendState::REPLACE),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview: None, cache: None,
+    })
+}
+
+fn build_decal_pipeline(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    bgl0: &wgpu::BindGroupLayout,
+) -> wgpu::RenderPipeline {
+    let shader = make_shader(device, "decal-shader", DECAL_SHADER);
+    let layout = make_layout(device, "decal-pl", &[bgl0]);
+    // Decals lie just above the sand — read depth so they don't draw
+    // through other geometry, but don't write back (so successive
+    // decals can blend without z-fighting).
+    let depth = wgpu::DepthStencilState {
+        format: wgpu::TextureFormat::Depth32Float,
+        depth_write_enabled: false,
+        depth_compare: wgpu::CompareFunction::Less,
+        stencil: Default::default(),
+        bias: wgpu::DepthBiasState { constant: -2, slope_scale: -1.0, clamp: 0.0 },
+    };
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("decal-pipeline"),
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module: &shader, entry_point: Some("vs"),
+            compilation_options: Default::default(),
+            buffers: &[wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<DecalVertex>() as u64,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &[
+                    wgpu::VertexAttribute { offset: 0,  shader_location: 0, format: wgpu::VertexFormat::Float32x3 },
+                    wgpu::VertexAttribute { offset: 12, shader_location: 1, format: wgpu::VertexFormat::Float32x2 },
+                    wgpu::VertexAttribute { offset: 20, shader_location: 2, format: wgpu::VertexFormat::Float32 },
+                ],
+            }],
+        },
+        primitive: wgpu::PrimitiveState { cull_mode: None, ..Default::default() },
+        depth_stencil: Some(depth),
+        multisample: Default::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &shader, entry_point: Some("fs"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview: None, cache: None,
+    })
+}
+
+fn build_fade_pipeline(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    bgl0: &wgpu::BindGroupLayout,
+    bgl1_portal: &wgpu::BindGroupLayout,
+) -> wgpu::RenderPipeline {
+    let shader = make_shader(device, "fade-shader", FADE_SHADER);
+    let layout = make_layout(device, "fade-pl", &[bgl0, bgl1_portal]);
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("fade-pipeline"),
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module: &shader, entry_point: Some("vs"),
+            compilation_options: Default::default(),
+            buffers: &[wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<PosVertex>() as u64,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &[
+                    wgpu::VertexAttribute { offset: 0, shader_location: 0, format: wgpu::VertexFormat::Float32x3 },
+                ],
+            }],
+        },
+        primitive: wgpu::PrimitiveState { cull_mode: None, ..Default::default() },
+        // Skip depth — the overlay sits in NDC and should always paint over the scene.
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: wgpu::TextureFormat::Depth32Float,
+            depth_write_enabled: false,
+            depth_compare: wgpu::CompareFunction::Always,
+            stencil: Default::default(),
+            bias: Default::default(),
+        }),
+        multisample: Default::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &shader, entry_point: Some("fs"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview: None, cache: None,
+    })
 }
 
 // The camera position used both for actual rendering and the
