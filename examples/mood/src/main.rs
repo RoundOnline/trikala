@@ -2263,9 +2263,8 @@ impl Game {
         let dest_theme = room_theme(dest as u8);
 
         let portal_lvp = compute_light_view_proj(&dest_world.env, self.player.pos);
-        let u_shadow_portal = build_uniforms(
-            portal_lvp, &dest_world.env, &cam, &self.player.pos, 1.0,
-            &self.fireflies, false, self.time, &self.water.ripples_uniform, [0.0; 4]);
+        let u_shadow_portal =
+            self.build_uniforms(portal_lvp, &dest_world.env, cam, false, [0.0; 4]);
         self.queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&u_shadow_portal));
         {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -2293,9 +2292,7 @@ impl Game {
         // once the player actually enters it, which makes the portal
         // preview match the post-teleport reality (otherwise the colour
         // shifts at the moment of crossing).
-        let u_portal = build_uniforms(
-            view_proj, &dest_world.env, &cam, &self.player.pos, 1.0,
-            &self.fireflies, true, self.time, &self.water.ripples_uniform, [0.0; 4]);
+        let u_portal = self.build_uniforms(view_proj, &dest_world.env, cam, true, [0.0; 4]);
         self.queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&u_portal));
         let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("portal-view"),
@@ -2339,9 +2336,7 @@ impl Game {
         cam: Vec3,
     ) {
         let light_view_proj = compute_light_view_proj(&cur.env, self.player.pos);
-        let u_shadow = build_uniforms(
-            light_view_proj, &cur.env, &cam, &self.player.pos, 1.0,
-            &self.fireflies, true, self.time, &self.water.ripples_uniform, [0.0; 4]);
+        let u_shadow = self.build_uniforms(light_view_proj, &cur.env, cam, true, [0.0; 4]);
         self.queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&u_shadow));
         let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("shadow-current"),
@@ -2395,10 +2390,8 @@ impl Game {
         fade_alpha: f32,
         nearest_door_idx: usize,
     ) {
-        let u_main = build_uniforms(
-            view_proj, &cur.env, &cam, &self.player.pos, 1.0,
-            &self.fireflies, true, self.time, &self.water.ripples_uniform,
-            [0.0, 0.0, 0.0, fade_alpha]);
+        let u_main = self.build_uniforms(
+            view_proj, &cur.env, cam, true, [0.0, 0.0, 0.0, fade_alpha]);
         let cur_theme = room_theme(cur_world);
         self.queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&u_main));
         let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -2538,42 +2531,41 @@ impl Game {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn build_uniforms(
-    view_proj: Mat4,
-    env: &WorldEnv,
-    cam: &Vec3,
-    player_pos: &Vec3,
-    shadow_strength: f32,
-    flies: &[Firefly; FIREFLY_COUNT],
-    show_flies: bool,
-    time: f32,
-    ripples: &[[f32; 4]; 8],
-    fade: [f32; 4],
-) -> Uniforms {
-    let light_view_proj = compute_light_view_proj(env, *player_pos);
-    let mut fly_pos = [[0.0_f32; 4]; FIREFLY_COUNT];
-    for (i, f) in flies.iter().enumerate() {
-        // .w masks firefly light contribution per pass — main pass
-        // shows them, portal pass doesn't (the destination room
-        // shouldn't borrow the escort).
+impl Game {
+    /// Builds the per-pass `Uniforms` from `self` + the few values that
+    /// actually vary between passes. `show_flies` is the only firefly
+    /// flag — `false` masks them out for the portal pre-pass (the room
+    /// being previewed shouldn't borrow the player's escort).
+    fn build_uniforms(
+        &self,
+        view_proj: Mat4,
+        env: &WorldEnv,
+        cam: Vec3,
+        show_flies: bool,
+        fade: [f32; 4],
+    ) -> Uniforms {
+        let light_view_proj = compute_light_view_proj(env, self.player.pos);
+        let mut fly_pos = [[0.0_f32; 4]; FIREFLY_COUNT];
         let w = if show_flies { 1.0 } else { 0.0 };
-        fly_pos[i] = [f.pos.x, f.pos.y, f.pos.z, w];
-    }
-    Uniforms {
-        view_proj: view_proj.to_cols_array_2d(),
-        light_view_proj: light_view_proj.to_cols_array_2d(),
-        camera_pos: [cam.x, cam.y, cam.z, 1.0],
-        lamp_pos: [env.lamp_pos.x, env.lamp_pos.y, env.lamp_pos.z, 1.0],
-        lamp_color: env.lamp_color,
-        moon_dir: [env.moon_dir.x, env.moon_dir.y, env.moon_dir.z, 0.0],
-        moon_color: env.moon_color,
-        ambient_color: [env.ambient[0], env.ambient[1], env.ambient[2], shadow_strength],
-        fly_pos,
-        fly_color: [3.5, 5.0, 2.5, 1.0],
-        player_pos: [player_pos.x, player_pos.y, player_pos.z, time],
-        ripples: *ripples,
-        fade,
+        for (i, f) in self.fireflies.iter().enumerate() {
+            fly_pos[i] = [f.pos.x, f.pos.y, f.pos.z, w];
+        }
+        Uniforms {
+            view_proj: view_proj.to_cols_array_2d(),
+            light_view_proj: light_view_proj.to_cols_array_2d(),
+            camera_pos: [cam.x, cam.y, cam.z, 1.0],
+            lamp_pos: [env.lamp_pos.x, env.lamp_pos.y, env.lamp_pos.z, 1.0],
+            lamp_color: env.lamp_color,
+            moon_dir: [env.moon_dir.x, env.moon_dir.y, env.moon_dir.z, 0.0],
+            moon_color: env.moon_color,
+            // .w = shadow strength — always 1 (shadowing on) for now.
+            ambient_color: [env.ambient[0], env.ambient[1], env.ambient[2], 1.0],
+            fly_pos,
+            fly_color: [3.5, 5.0, 2.5, 1.0],
+            player_pos: [self.player.pos.x, self.player.pos.y, self.player.pos.z, self.time],
+            ripples: self.water.ripples_uniform,
+            fade,
+        }
     }
 }
 
