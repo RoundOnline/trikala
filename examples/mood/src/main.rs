@@ -846,6 +846,79 @@ struct WorldGpu {
     env: WorldEnv,
 }
 
+/// Render-to-texture portals + the door frame + magic-surface mesh.
+/// Both doors share one mesh; indices [0..N) are door A, [N..2N) are
+/// door B, with N stored as `indices_per_door`.
+struct PortalSystem {
+    /// Per-door offscreen colour target where the destination room is
+    /// rendered each frame. [0] = door A (bit-0 axis), [1] = door B.
+    color_views: [wgpu::TextureView; 2],
+    depth_views: [wgpu::TextureView; 2],
+    tex_bgs: [wgpu::BindGroup; 2],
+    sampler: wgpu::Sampler,
+    bgl1: wgpu::BindGroupLayout,
+    pipeline: wgpu::RenderPipeline,
+    indices_per_door: u32,
+    vbuf: wgpu::Buffer,
+    ibuf: wgpu::Buffer,
+    door_vbuf: wgpu::Buffer,
+    door_ibuf: wgpu::Buffer,
+    door_index_count: u32,
+}
+
+struct GrassSystem {
+    pipeline: wgpu::RenderPipeline,
+    vbuf: wgpu::Buffer,
+    ibuf: wgpu::Buffer,
+    index_count: u32,
+}
+
+struct WaterSystem {
+    pipeline: wgpu::RenderPipeline,
+    vbuf: wgpu::Buffer,
+    ibuf: wgpu::Buffer,
+    index_count: u32,
+    /// Active ripples — (world-space xz, spawn time). Capped at 8.
+    ripples: std::collections::VecDeque<(Vec3, f32)>,
+    /// Packed into the main Uniforms buffer for the water shader.
+    ripples_uniform: [[f32; 4]; 8],
+}
+
+struct SandSystem {
+    pipeline: wgpu::RenderPipeline,
+    vbuf: wgpu::Buffer,
+    ibuf: wgpu::Buffer,
+    index_count: u32,
+}
+
+struct DecalSystem {
+    pipeline: wgpu::RenderPipeline,
+    /// Footprint mesh rebuilt every frame from `footprints`.
+    vbuf: wgpu::Buffer,
+    ibuf: wgpu::Buffer,
+    index_count: u32,
+    vbuf_capacity: usize,
+    /// (world position, body_yaw, spawn_time, left_or_right).
+    footprints: std::collections::VecDeque<(Vec3, f32, f32, f32)>,
+    /// Time of the last footprint spawn, so we space them evenly.
+    last_footprint_t: f32,
+}
+
+struct FadeSystem {
+    pipeline: wgpu::RenderPipeline,
+    vbuf: wgpu::Buffer,
+}
+
+/// Fireflies follow the player into whichever room they're in, so we
+/// only ever need one mesh buffer for them. They're drawn in the main
+/// pass only; the portal pass doesn't include them because the other
+/// room shouldn't borrow the player's escort.
+struct FireflyMesh {
+    vbuf: wgpu::Buffer,
+    ibuf: wgpu::Buffer,
+    count: u32,
+}
+
 struct Game {
     window: Arc<Window>,
     surface: wgpu::Surface<'static>,
@@ -856,18 +929,8 @@ struct Game {
     depth_view: wgpu::TextureView,
     shadow_view: wgpu::TextureView,
 
-    // Two offscreen targets — one per door — where the matching
-    // destination room is rendered each frame. Indexed [0] = door A
-    // (bit-0 axis), [1] = door B (bit-1 axis).
-    portal_color_views: [wgpu::TextureView; 2],
-    portal_depth_views: [wgpu::TextureView; 2],
-    portal_tex_bgs: [wgpu::BindGroup; 2],
-    portal_sampler: wgpu::Sampler,
-    bgl1_portal: wgpu::BindGroupLayout,
-
     main_pipeline: wgpu::RenderPipeline,
     shadow_pipeline: wgpu::RenderPipeline,
-    portal_pipeline: wgpu::RenderPipeline,
     skin_pipeline: wgpu::RenderPipeline,
     skin_shadow_pipeline: wgpu::RenderPipeline,
     character: Character,
@@ -884,22 +947,8 @@ struct Game {
 
     /// 4 themed rooms, indexed by `current_world`.
     worlds: [WorldGpu; 4],
-    /// Both door quads share one mesh: indices [0..N) are door A,
-    /// [N..2N) are door B. Stored here as N.
-    portal_indices_per_door: u32,
-    portal_vbuf: wgpu::Buffer,
-    portal_ibuf: wgpu::Buffer,
-    door_vbuf: wgpu::Buffer,
-    door_ibuf: wgpu::Buffer,
-    door_index_count: u32,
-
-    // Fireflies follow the player into whichever room they're in,
-    // so we only ever need one mesh buffer for them. They're drawn
-    // in the main pass only; the portal pass doesn't include them
-    // because the other room shouldn't borrow the player's escort.
-    firefly_vbuf: wgpu::Buffer,
-    firefly_ibuf: wgpu::Buffer,
-    firefly_count: u32,
+    portal: PortalSystem,
+    firefly_mesh: FireflyMesh,
 
     /// Current room — interpreted as two independent bits:
     /// bit 0 = door-A axis, bit 1 = door-B axis. The enum mapping is
@@ -912,41 +961,11 @@ struct Game {
     time: f32,
     last_frame: std::time::Instant,
 
-    // ── Grass system ──
-    grass_pipeline: wgpu::RenderPipeline,
-    grass_vbuf: wgpu::Buffer,
-    grass_ibuf: wgpu::Buffer,
-    grass_index_count: u32,
-
-    // ── Water + ripple system ──
-    water_pipeline: wgpu::RenderPipeline,
-    water_vbuf: wgpu::Buffer,
-    water_ibuf: wgpu::Buffer,
-    water_index_count: u32,
-    /// Active ripples — (world-space xz, spawn time). Capped at 8.
-    ripples: std::collections::VecDeque<(Vec3, f32)>,
-    /// Packed into the main Uniforms buffer for the water shader.
-    ripples_uniform: [[f32; 4]; 8],
-
-    // ── Sand + footprint decals ──
-    sand_pipeline: wgpu::RenderPipeline,
-    sand_vbuf: wgpu::Buffer,
-    sand_ibuf: wgpu::Buffer,
-    sand_index_count: u32,
-    decal_pipeline: wgpu::RenderPipeline,
-    /// Footprint mesh rebuilt every frame from `footprints`.
-    decal_vbuf: wgpu::Buffer,
-    decal_ibuf: wgpu::Buffer,
-    decal_index_count: u32,
-    decal_vbuf_capacity: usize,
-    /// (world position, body_yaw, spawn_time, left_or_right).
-    footprints: std::collections::VecDeque<(Vec3, f32, f32, f32)>,
-    /// Time of the last footprint spawn, so we space them evenly.
-    last_footprint_t: f32,
-
-    // ── Door dream-blend overlay ──
-    fade_pipeline: wgpu::RenderPipeline,
-    fade_vbuf: wgpu::Buffer,
+    grass: GrassSystem,
+    water: WaterSystem,
+    sand: SandSystem,
+    decal: DecalSystem,
+    fade: FadeSystem,
 }
 
 impl Game {
@@ -1761,20 +1780,30 @@ impl Game {
         Self {
             window, surface, device, queue, config,
             depth_view, shadow_view,
-            portal_color_views, portal_depth_views, portal_tex_bgs,
-            portal_sampler,
-            bgl1_portal,
-            main_pipeline, shadow_pipeline, portal_pipeline,
+            main_pipeline, shadow_pipeline,
             skin_pipeline, skin_shadow_pipeline, character,
             anim_ctrl: AnimController::new(),
             jump_impulse, jump_clip_start,
             main_bg0, main_bg1_shadow, shadow_bg0,
             uniform_buf,
             worlds,
-            portal_indices_per_door,
-            portal_vbuf, portal_ibuf,
-            door_vbuf, door_ibuf, door_index_count,
-            firefly_vbuf, firefly_ibuf, firefly_count: 0,
+            portal: PortalSystem {
+                color_views: portal_color_views,
+                depth_views: portal_depth_views,
+                tex_bgs: portal_tex_bgs,
+                sampler: portal_sampler,
+                bgl1: bgl1_portal,
+                pipeline: portal_pipeline,
+                indices_per_door: portal_indices_per_door,
+                vbuf: portal_vbuf,
+                ibuf: portal_ibuf,
+                door_vbuf, door_ibuf, door_index_count,
+            },
+            firefly_mesh: FireflyMesh {
+                vbuf: firefly_vbuf,
+                ibuf: firefly_ibuf,
+                count: 0,
+            },
             current_world: 0, // start in Water room
             player: Player {
                 pos: spawn, prev_pos: spawn,
@@ -1802,16 +1831,39 @@ impl Game {
             },
             time: 0.0,
             last_frame: std::time::Instant::now(),
-            grass_pipeline, grass_vbuf, grass_ibuf, grass_index_count,
-            water_pipeline, water_vbuf, water_ibuf, water_index_count,
-            ripples: std::collections::VecDeque::with_capacity(MAX_RIPPLES),
-            ripples_uniform: [[0.0; 4]; MAX_RIPPLES],
-            sand_pipeline, sand_vbuf, sand_ibuf, sand_index_count,
-            decal_pipeline, decal_vbuf, decal_ibuf, decal_index_count: 0,
-            decal_vbuf_capacity,
-            footprints: std::collections::VecDeque::with_capacity(MAX_FOOTPRINTS),
-            last_footprint_t: -10.0,
-            fade_pipeline, fade_vbuf,
+            grass: GrassSystem {
+                pipeline: grass_pipeline,
+                vbuf: grass_vbuf,
+                ibuf: grass_ibuf,
+                index_count: grass_index_count,
+            },
+            water: WaterSystem {
+                pipeline: water_pipeline,
+                vbuf: water_vbuf,
+                ibuf: water_ibuf,
+                index_count: water_index_count,
+                ripples: std::collections::VecDeque::with_capacity(MAX_RIPPLES),
+                ripples_uniform: [[0.0; 4]; MAX_RIPPLES],
+            },
+            sand: SandSystem {
+                pipeline: sand_pipeline,
+                vbuf: sand_vbuf,
+                ibuf: sand_ibuf,
+                index_count: sand_index_count,
+            },
+            decal: DecalSystem {
+                pipeline: decal_pipeline,
+                vbuf: decal_vbuf,
+                ibuf: decal_ibuf,
+                index_count: 0,
+                vbuf_capacity: decal_vbuf_capacity,
+                footprints: std::collections::VecDeque::with_capacity(MAX_FOOTPRINTS),
+                last_footprint_t: -10.0,
+            },
+            fade: FadeSystem {
+                pipeline: fade_pipeline,
+                vbuf: fade_vbuf,
+            },
         }
     }
 
@@ -1822,14 +1874,14 @@ impl Game {
         self.depth_view = make_depth(&self.device, self.config.width, self.config.height, "depth");
         for i in 0..2 {
             let (pcv, pdv) = make_portal_targets(&self.device, self.config.width, self.config.height, self.config.format);
-            self.portal_color_views[i] = pcv;
-            self.portal_depth_views[i] = pdv;
-            self.portal_tex_bgs[i] = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            self.portal.color_views[i] = pcv;
+            self.portal.depth_views[i] = pdv;
+            self.portal.tex_bgs[i] = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("portal-tex-bg"),
-                layout: &self.bgl1_portal,
+                layout: &self.portal.bgl1,
                 entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&self.portal_color_views[i]) },
-                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.portal_sampler) },
+                    wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&self.portal.color_views[i]) },
+                    wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.portal.sampler) },
                 ],
             });
         }
@@ -2081,25 +2133,25 @@ impl Game {
         let walking_pace = self.player.pos.distance(self.player.prev_pos) > 0.0;
         if on_water && walking_pace {
             // Stagger by step distance so a slow walk gets fewer than a run.
-            let last = self.ripples.back().map(|r| r.1).unwrap_or(-10.0);
+            let last = self.water.ripples.back().map(|r| r.1).unwrap_or(-10.0);
             if self.time - last > 0.35 {
-                if self.ripples.len() == MAX_RIPPLES {
-                    self.ripples.pop_front();
+                if self.water.ripples.len() == MAX_RIPPLES {
+                    self.water.ripples.pop_front();
                 }
-                self.ripples.push_back((self.player.pos, self.time));
+                self.water.ripples.push_back((self.player.pos, self.time));
             }
         }
         // Drop expired ripples (lifetime ~2 s — must match the shader).
-        while let Some(&(_, t)) = self.ripples.front() {
+        while let Some(&(_, t)) = self.water.ripples.front() {
             if self.time - t > 2.0 {
-                self.ripples.pop_front();
+                self.water.ripples.pop_front();
             } else {
                 break;
             }
         }
-        self.ripples_uniform = [[0.0; 4]; MAX_RIPPLES];
-        for (i, &(p, t0)) in self.ripples.iter().enumerate() {
-            self.ripples_uniform[i] = [p.x, p.z, t0, 1.0];
+        self.water.ripples_uniform = [[0.0; 4]; MAX_RIPPLES];
+        for (i, &(p, t0)) in self.water.ripples.iter().enumerate() {
+            self.water.ripples_uniform[i] = [p.x, p.z, t0, 1.0];
         }
 
         // Footprints — stamp one quad per step (alternating left/right
@@ -2108,38 +2160,38 @@ impl Game {
         // each existing print over time.
         let on_sand = self.player.on_ground
             && in_patch(self.player.pos.x, self.player.pos.z, SAND_MIN, SAND_MAX);
-        if on_sand && walking_pace && self.time - self.last_footprint_t > 0.34 {
-            if self.footprints.len() == MAX_FOOTPRINTS {
-                self.footprints.pop_front();
+        if on_sand && walking_pace && self.time - self.decal.last_footprint_t > 0.34 {
+            if self.decal.footprints.len() == MAX_FOOTPRINTS {
+                self.decal.footprints.pop_front();
             }
-            let side = if self.footprints.len().is_multiple_of(2) { 1.0 } else { -1.0 };
-            self.footprints.push_back((self.player.pos, self.player.body_yaw, self.time, side));
-            self.last_footprint_t = self.time;
+            let side = if self.decal.footprints.len().is_multiple_of(2) { 1.0 } else { -1.0 };
+            self.decal.footprints.push_back((self.player.pos, self.player.body_yaw, self.time, side));
+            self.decal.last_footprint_t = self.time;
         }
         // Drop fully-faded prints.
-        while let Some(&(_, _, t0, _)) = self.footprints.front() {
+        while let Some(&(_, _, t0, _)) = self.decal.footprints.front() {
             if self.time - t0 > 12.0 {
-                self.footprints.pop_front();
+                self.decal.footprints.pop_front();
             } else {
                 break;
             }
         }
-        let (dv, di) = build_decals(&self.footprints, self.time);
-        if !dv.is_empty() && dv.len() <= self.decal_vbuf_capacity {
-            self.queue.write_buffer(&self.decal_vbuf, 0, bytemuck::cast_slice(&dv));
-            self.queue.write_buffer(&self.decal_ibuf, 0, bytemuck::cast_slice(&di));
+        let (dv, di) = build_decals(&self.decal.footprints, self.time);
+        if !dv.is_empty() && dv.len() <= self.decal.vbuf_capacity {
+            self.queue.write_buffer(&self.decal.vbuf, 0, bytemuck::cast_slice(&dv));
+            self.queue.write_buffer(&self.decal.ibuf, 0, bytemuck::cast_slice(&di));
         }
-        self.decal_index_count = di.len() as u32;
+        self.decal.index_count = di.len() as u32;
 
         // Fireflies follow the player through every door, so we only
         // need one mesh buffer.
         step_fireflies(&mut self.fireflies, self.player.pos, dt, self.time);
         let positions: Vec<Vec3> = self.fireflies.iter().map(|f| f.pos).collect();
         let (fv, fi) = build_fireflies(&positions);
-        self.firefly_count = fi.len() as u32;
+        self.firefly_mesh.count = fi.len() as u32;
         if !fv.is_empty() {
-            self.queue.write_buffer(&self.firefly_vbuf, 0, bytemuck::cast_slice(&fv));
-            self.queue.write_buffer(&self.firefly_ibuf, 0, bytemuck::cast_slice(&fi));
+            self.queue.write_buffer(&self.firefly_mesh.vbuf, 0, bytemuck::cast_slice(&fv));
+            self.queue.write_buffer(&self.firefly_mesh.ibuf, 0, bytemuck::cast_slice(&fi));
         }
 
         let frame = match self.surface.get_current_texture() {
@@ -2166,7 +2218,7 @@ impl Game {
             let portal_lvp = compute_light_view_proj(&dest_world.env, self.player.pos);
             let u_shadow_portal = build_uniforms(
                 portal_lvp, &dest_world.env, &cam, &self.player.pos, 1.0,
-                &self.fireflies, false, self.time, &self.ripples_uniform, [0.0; 4]);
+                &self.fireflies, false, self.time, &self.water.ripples_uniform, [0.0; 4]);
             self.queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&u_shadow_portal));
             {
                 let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -2196,13 +2248,13 @@ impl Game {
             // post-teleport reality (otherwise the colour shifts).
             let u_portal = build_uniforms(
                 proj * view, &dest_world.env, &cam, &self.player.pos, 1.0,
-                &self.fireflies, true, self.time, &self.ripples_uniform, [0.0; 4]);
+                &self.fireflies, true, self.time, &self.water.ripples_uniform, [0.0; 4]);
             self.queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&u_portal));
             {
                 let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("portal-view"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &self.portal_color_views[door_idx],
+                        view: &self.portal.color_views[door_idx],
                         resolve_target: None,
                         depth_slice: None,
                         ops: wgpu::Operations {
@@ -2211,7 +2263,7 @@ impl Game {
                         },
                     })],
                     depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                        view: &self.portal_depth_views[door_idx],
+                        view: &self.portal.depth_views[door_idx],
                         depth_ops: Some(wgpu::Operations {
                             load: wgpu::LoadOp::Clear(1.0),
                             store: wgpu::StoreOp::Store,
@@ -2229,25 +2281,25 @@ impl Game {
                 // Destination room's feature.
                 match dest_theme {
                     RoomTheme::Sand => {
-                        pass.set_pipeline(&self.sand_pipeline);
+                        pass.set_pipeline(&self.sand.pipeline);
                         pass.set_bind_group(0, &self.main_bg0, &[]);
-                        pass.set_vertex_buffer(0, self.sand_vbuf.slice(..));
-                        pass.set_index_buffer(self.sand_ibuf.slice(..), wgpu::IndexFormat::Uint32);
-                        pass.draw_indexed(0..self.sand_index_count, 0, 0..1);
+                        pass.set_vertex_buffer(0, self.sand.vbuf.slice(..));
+                        pass.set_index_buffer(self.sand.ibuf.slice(..), wgpu::IndexFormat::Uint32);
+                        pass.draw_indexed(0..self.sand.index_count, 0, 0..1);
                     }
                     RoomTheme::Grass => {
-                        pass.set_pipeline(&self.grass_pipeline);
+                        pass.set_pipeline(&self.grass.pipeline);
                         pass.set_bind_group(0, &self.main_bg0, &[]);
-                        pass.set_vertex_buffer(0, self.grass_vbuf.slice(..));
-                        pass.set_index_buffer(self.grass_ibuf.slice(..), wgpu::IndexFormat::Uint32);
-                        pass.draw_indexed(0..self.grass_index_count, 0, 0..1);
+                        pass.set_vertex_buffer(0, self.grass.vbuf.slice(..));
+                        pass.set_index_buffer(self.grass.ibuf.slice(..), wgpu::IndexFormat::Uint32);
+                        pass.draw_indexed(0..self.grass.index_count, 0, 0..1);
                     }
                     RoomTheme::Water => {
-                        pass.set_pipeline(&self.water_pipeline);
+                        pass.set_pipeline(&self.water.pipeline);
                         pass.set_bind_group(0, &self.main_bg0, &[]);
-                        pass.set_vertex_buffer(0, self.water_vbuf.slice(..));
-                        pass.set_index_buffer(self.water_ibuf.slice(..), wgpu::IndexFormat::Uint32);
-                        pass.draw_indexed(0..self.water_index_count, 0, 0..1);
+                        pass.set_vertex_buffer(0, self.water.vbuf.slice(..));
+                        pass.set_index_buffer(self.water.ibuf.slice(..), wgpu::IndexFormat::Uint32);
+                        pass.draw_indexed(0..self.water.index_count, 0, 0..1);
                     }
                     RoomTheme::Free => {}
                 }
@@ -2258,7 +2310,7 @@ impl Game {
 
         // ── PASS C: shadow map for CURRENT room ──
         let light_view_proj = compute_light_view_proj(&cur.env, self.player.pos);
-        let u_shadow = build_uniforms(light_view_proj, &cur.env, &cam, &self.player.pos, 1.0, &self.fireflies, true, self.time, &self.ripples_uniform, [0.0; 4]);
+        let u_shadow = build_uniforms(light_view_proj, &cur.env, &cam, &self.player.pos, 1.0, &self.fireflies, true, self.time, &self.water.ripples_uniform, [0.0; 4]);
         self.queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&u_shadow));
         {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -2282,9 +2334,9 @@ impl Game {
             // Door is always present in either world — visible and
             // casting shadow even from the locked side; only the
             // portal's magic surface is gated by portal_active.
-            pass.set_vertex_buffer(0, self.door_vbuf.slice(..));
-            pass.set_index_buffer(self.door_ibuf.slice(..), wgpu::IndexFormat::Uint32);
-            pass.draw_indexed(0..self.door_index_count, 0, 0..1);
+            pass.set_vertex_buffer(0, self.portal.door_vbuf.slice(..));
+            pass.set_index_buffer(self.portal.door_ibuf.slice(..), wgpu::IndexFormat::Uint32);
+            pass.draw_indexed(0..self.portal.door_index_count, 0, 0..1);
             // Skinned character — depth-only skin shader.
             pass.set_pipeline(&self.skin_shadow_pipeline);
             pass.set_bind_group(0, &self.shadow_bg0, &[]);
@@ -2307,7 +2359,7 @@ impl Game {
         let (nearest_door_d, nearest_door_idx) =
             if d_a <= d_b { (d_a, 0usize) } else { (d_b, 1usize) };
         let fade_alpha = (1.0 - nearest_door_d / BLEND_RADIUS).clamp(0.0, 1.0);
-        let u_main = build_uniforms(view_proj, &cur.env, &cam, &self.player.pos, 1.0, &self.fireflies, true, self.time, &self.ripples_uniform, [0.0, 0.0, 0.0, fade_alpha]);
+        let u_main = build_uniforms(view_proj, &cur.env, &cam, &self.player.pos, 1.0, &self.fireflies, true, self.time, &self.water.ripples_uniform, [0.0, 0.0, 0.0, fade_alpha]);
         let cur_theme = room_theme(cur_world);
         self.queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&u_main));
         {
@@ -2345,32 +2397,32 @@ impl Game {
             // the player via the player_pos uniform.
             match cur_theme {
                 RoomTheme::Sand => {
-                    pass.set_pipeline(&self.sand_pipeline);
+                    pass.set_pipeline(&self.sand.pipeline);
                     pass.set_bind_group(0, &self.main_bg0, &[]);
-                    pass.set_vertex_buffer(0, self.sand_vbuf.slice(..));
-                    pass.set_index_buffer(self.sand_ibuf.slice(..), wgpu::IndexFormat::Uint32);
-                    pass.draw_indexed(0..self.sand_index_count, 0, 0..1);
-                    if self.decal_index_count > 0 {
-                        pass.set_pipeline(&self.decal_pipeline);
+                    pass.set_vertex_buffer(0, self.sand.vbuf.slice(..));
+                    pass.set_index_buffer(self.sand.ibuf.slice(..), wgpu::IndexFormat::Uint32);
+                    pass.draw_indexed(0..self.sand.index_count, 0, 0..1);
+                    if self.decal.index_count > 0 {
+                        pass.set_pipeline(&self.decal.pipeline);
                         pass.set_bind_group(0, &self.main_bg0, &[]);
-                        pass.set_vertex_buffer(0, self.decal_vbuf.slice(..));
-                        pass.set_index_buffer(self.decal_ibuf.slice(..), wgpu::IndexFormat::Uint32);
-                        pass.draw_indexed(0..self.decal_index_count, 0, 0..1);
+                        pass.set_vertex_buffer(0, self.decal.vbuf.slice(..));
+                        pass.set_index_buffer(self.decal.ibuf.slice(..), wgpu::IndexFormat::Uint32);
+                        pass.draw_indexed(0..self.decal.index_count, 0, 0..1);
                     }
                 }
                 RoomTheme::Grass => {
-                    pass.set_pipeline(&self.grass_pipeline);
+                    pass.set_pipeline(&self.grass.pipeline);
                     pass.set_bind_group(0, &self.main_bg0, &[]);
-                    pass.set_vertex_buffer(0, self.grass_vbuf.slice(..));
-                    pass.set_index_buffer(self.grass_ibuf.slice(..), wgpu::IndexFormat::Uint32);
-                    pass.draw_indexed(0..self.grass_index_count, 0, 0..1);
+                    pass.set_vertex_buffer(0, self.grass.vbuf.slice(..));
+                    pass.set_index_buffer(self.grass.ibuf.slice(..), wgpu::IndexFormat::Uint32);
+                    pass.draw_indexed(0..self.grass.index_count, 0, 0..1);
                 }
                 RoomTheme::Water => {
-                    pass.set_pipeline(&self.water_pipeline);
+                    pass.set_pipeline(&self.water.pipeline);
                     pass.set_bind_group(0, &self.main_bg0, &[]);
-                    pass.set_vertex_buffer(0, self.water_vbuf.slice(..));
-                    pass.set_index_buffer(self.water_ibuf.slice(..), wgpu::IndexFormat::Uint32);
-                    pass.draw_indexed(0..self.water_index_count, 0, 0..1);
+                    pass.set_vertex_buffer(0, self.water.vbuf.slice(..));
+                    pass.set_index_buffer(self.water.ibuf.slice(..), wgpu::IndexFormat::Uint32);
+                    pass.draw_indexed(0..self.water.index_count, 0, 0..1);
                 }
                 RoomTheme::Free => {}
             }
@@ -2378,18 +2430,18 @@ impl Game {
             // because they're part of the LOCATION. The blend
             // overlay tints them along with everything else, then
             // the character + fireflies are layered on top crisp.
-            let n = self.portal_indices_per_door;
+            let n = self.portal.indices_per_door;
             if portal_a_visible || portal_b_visible {
-                pass.set_pipeline(&self.portal_pipeline);
+                pass.set_pipeline(&self.portal.pipeline);
                 pass.set_bind_group(0, &self.main_bg0, &[]);
-                pass.set_vertex_buffer(0, self.portal_vbuf.slice(..));
-                pass.set_index_buffer(self.portal_ibuf.slice(..), wgpu::IndexFormat::Uint32);
+                pass.set_vertex_buffer(0, self.portal.vbuf.slice(..));
+                pass.set_index_buffer(self.portal.ibuf.slice(..), wgpu::IndexFormat::Uint32);
                 if portal_a_visible {
-                    pass.set_bind_group(1, &self.portal_tex_bgs[0], &[]);
+                    pass.set_bind_group(1, &self.portal.tex_bgs[0], &[]);
                     pass.draw_indexed(0..n, 0, 0..1);
                 }
                 if portal_b_visible {
-                    pass.set_bind_group(1, &self.portal_tex_bgs[1], &[]);
+                    pass.set_bind_group(1, &self.portal.tex_bgs[1], &[]);
                     pass.draw_indexed(n..(2 * n), 0, 0..1);
                 }
             }
@@ -2398,10 +2450,10 @@ impl Game {
             // below are drawn AFTER this so they stay crisp through
             // the transition.
             if fade_alpha > 0.0 {
-                pass.set_pipeline(&self.fade_pipeline);
+                pass.set_pipeline(&self.fade.pipeline);
                 pass.set_bind_group(0, &self.main_bg0, &[]);
-                pass.set_bind_group(1, &self.portal_tex_bgs[nearest_door_idx], &[]);
-                pass.set_vertex_buffer(0, self.fade_vbuf.slice(..));
+                pass.set_bind_group(1, &self.portal.tex_bgs[nearest_door_idx], &[]);
+                pass.set_vertex_buffer(0, self.fade.vbuf.slice(..));
                 pass.draw(0..3, 0..1);
             }
             // Door frames — drawn AFTER the dream-blend so they
@@ -2410,9 +2462,9 @@ impl Game {
             pass.set_pipeline(&self.main_pipeline);
             pass.set_bind_group(0, &self.main_bg0, &[]);
             pass.set_bind_group(1, &self.main_bg1_shadow, &[]);
-            pass.set_vertex_buffer(0, self.door_vbuf.slice(..));
-            pass.set_index_buffer(self.door_ibuf.slice(..), wgpu::IndexFormat::Uint32);
-            pass.draw_indexed(0..self.door_index_count, 0, 0..1);
+            pass.set_vertex_buffer(0, self.portal.door_vbuf.slice(..));
+            pass.set_index_buffer(self.portal.door_ibuf.slice(..), wgpu::IndexFormat::Uint32);
+            pass.draw_indexed(0..self.portal.door_index_count, 0, 0..1);
             // Skinned character — drawn after the dream-blend so it
             // never fades. The transition is about the room, not
             // the player.
@@ -2429,13 +2481,13 @@ impl Game {
             }
             // Fireflies — also drawn after the dream-blend; they
             // follow the player and shouldn't fade with the room.
-            if self.firefly_count > 0 {
+            if self.firefly_mesh.count > 0 {
                 pass.set_pipeline(&self.main_pipeline);
                 pass.set_bind_group(0, &self.main_bg0, &[]);
                 pass.set_bind_group(1, &self.main_bg1_shadow, &[]);
-                pass.set_vertex_buffer(0, self.firefly_vbuf.slice(..));
-                pass.set_index_buffer(self.firefly_ibuf.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..self.firefly_count, 0, 0..1);
+                pass.set_vertex_buffer(0, self.firefly_mesh.vbuf.slice(..));
+                pass.set_index_buffer(self.firefly_mesh.ibuf.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..self.firefly_mesh.count, 0, 0..1);
             }
         }
 
