@@ -2038,7 +2038,6 @@ impl Game {
         let cur_world = self.current_world;
         let dest_a = cur_world ^ 1; // door A destination
         let dest_b = cur_world ^ 2; // door B destination
-        let virt_view_proj = proj * view;
         let cur = &self.worlds[cur_world as usize];
 
         // Each door has one "open" side per room — the side the
@@ -2204,117 +2203,73 @@ impl Game {
         let frame_view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
         let mut enc = self.device.create_command_encoder(&Default::default());
 
-        // ── Portal passes: render each destination room into its
-        //    own portal texture so each door reveals the right scene. ──
-        // We always render both even when the player isn't facing the
-        // door — keeps the texture content fresh and the cost is two
-        // small offscreen passes.
-        let _ = virt_view_proj;
+        // Render the destination rooms into the per-door portal textures.
+        // Always render both even when the player isn't facing the door —
+        // keeps the texture content fresh; the cost is two small offscreen
+        // passes.
         for door_idx in 0..2usize {
             let dest = if door_idx == 0 { dest_a } else { dest_b } as usize;
-            let dest_world = &self.worlds[dest];
-            let dest_theme = room_theme(dest as u8);
-
-            let portal_lvp = compute_light_view_proj(&dest_world.env, self.player.pos);
-            let u_shadow_portal = build_uniforms(
-                portal_lvp, &dest_world.env, &cam, &self.player.pos, 1.0,
-                &self.fireflies, false, self.time, &self.water.ripples_uniform, [0.0; 4]);
-            self.queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&u_shadow_portal));
-            {
-                let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("shadow-portal"),
-                    color_attachments: &[],
-                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                        view: &self.shadow_view,
-                        depth_ops: Some(wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(1.0),
-                            store: wgpu::StoreOp::Store,
-                        }),
-                        stencil_ops: None,
-                    }),
-                    ..Default::default()
-                });
-                pass.set_pipeline(&self.shadow_pipeline);
-                pass.set_bind_group(0, &self.shadow_bg0, &[]);
-                pass.set_vertex_buffer(0, dest_world.vbuf.slice(..));
-                pass.set_index_buffer(dest_world.ibuf.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..dest_world.index_count, 0, 0..1);
-            }
-
-            // show_flies = true so the destination room's lighting
-            // includes the player's firefly glow — same as how that
-            // room will look once the player actually enters it,
-            // which makes the portal-magic-surface preview match the
-            // post-teleport reality (otherwise the colour shifts).
-            let u_portal = build_uniforms(
-                proj * view, &dest_world.env, &cam, &self.player.pos, 1.0,
-                &self.fireflies, true, self.time, &self.water.ripples_uniform, [0.0; 4]);
-            self.queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&u_portal));
-            {
-                let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("portal-view"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &self.portal.color_views[door_idx],
-                        resolve_target: None,
-                        depth_slice: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(dest_world.env.sky),
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                        view: &self.portal.depth_views[door_idx],
-                        depth_ops: Some(wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(1.0),
-                            store: wgpu::StoreOp::Store,
-                        }),
-                        stencil_ops: None,
-                    }),
-                    ..Default::default()
-                });
-                pass.set_pipeline(&self.main_pipeline);
-                pass.set_bind_group(0, &self.main_bg0, &[]);
-                pass.set_bind_group(1, &self.main_bg1_shadow, &[]);
-                pass.set_vertex_buffer(0, dest_world.vbuf.slice(..));
-                pass.set_index_buffer(dest_world.ibuf.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..dest_world.index_count, 0, 0..1);
-                // Destination room's feature.
-                match dest_theme {
-                    RoomTheme::Sand => {
-                        pass.set_pipeline(&self.sand.pipeline);
-                        pass.set_bind_group(0, &self.main_bg0, &[]);
-                        pass.set_vertex_buffer(0, self.sand.vbuf.slice(..));
-                        pass.set_index_buffer(self.sand.ibuf.slice(..), wgpu::IndexFormat::Uint32);
-                        pass.draw_indexed(0..self.sand.index_count, 0, 0..1);
-                    }
-                    RoomTheme::Grass => {
-                        pass.set_pipeline(&self.grass.pipeline);
-                        pass.set_bind_group(0, &self.main_bg0, &[]);
-                        pass.set_vertex_buffer(0, self.grass.vbuf.slice(..));
-                        pass.set_index_buffer(self.grass.ibuf.slice(..), wgpu::IndexFormat::Uint32);
-                        pass.draw_indexed(0..self.grass.index_count, 0, 0..1);
-                    }
-                    RoomTheme::Water => {
-                        pass.set_pipeline(&self.water.pipeline);
-                        pass.set_bind_group(0, &self.main_bg0, &[]);
-                        pass.set_vertex_buffer(0, self.water.vbuf.slice(..));
-                        pass.set_index_buffer(self.water.ibuf.slice(..), wgpu::IndexFormat::Uint32);
-                        pass.draw_indexed(0..self.water.index_count, 0, 0..1);
-                    }
-                    RoomTheme::Free => {}
-                }
-                // No character / no fireflies in the portal view —
-                // they're with the player in the current room.
-            }
+            self.record_portal_pass(&mut enc, door_idx, dest, cam, proj * view);
         }
 
-        // ── PASS C: shadow map for CURRENT room ──
-        let light_view_proj = compute_light_view_proj(&cur.env, self.player.pos);
-        let u_shadow = build_uniforms(light_view_proj, &cur.env, &cam, &self.player.pos, 1.0, &self.fireflies, true, self.time, &self.water.ripples_uniform, [0.0; 4]);
-        self.queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&u_shadow));
+        // Shadow map for the current room. Includes character so the
+        // skinned body casts a shadow into the world.
+        self.record_shadow_pass_current(&mut enc, cur, cam);
+
+        // Door dream-blend — alpha rises as the player approaches the
+        // nearest door (peaks right at the door plane), then falls again
+        // over BLEND_RADIUS. The actual world flip happens at peak alpha
+        // so the cut is hidden inside the dissolve.
+        let to_a = self.player.pos - PORTAL_A_POS;
+        let to_b = self.player.pos - PORTAL_B_POS;
+        let d_a = (to_a.x * to_a.x + to_a.z * to_a.z).sqrt();
+        let d_b = (to_b.x * to_b.x + to_b.z * to_b.z).sqrt();
+        let (nearest_door_d, nearest_door_idx) =
+            if d_a <= d_b { (d_a, 0usize) } else { (d_b, 1usize) };
+        let fade_alpha = (1.0 - nearest_door_d / BLEND_RADIUS).clamp(0.0, 1.0);
+
+        self.record_main_pass(
+            &mut enc,
+            &frame_view,
+            cur,
+            cur_world,
+            cam,
+            view_proj,
+            portal_a_visible,
+            portal_b_visible,
+            fade_alpha,
+            nearest_door_idx,
+        );
+
+        self.queue.submit(Some(enc.finish()));
+        frame.present();
+        self.window.request_redraw();
+    }
+
+    /// Renders `dest` (destination room) into `self.portal.color_views[door_idx]`,
+    /// preceded by a shadow pass for that room. `cam` and `view_proj` are
+    /// the player's actual camera — the destination room is rendered as
+    /// if the player were looking from the same viewpoint, which the
+    /// portal magic-surface shader then samples per-pixel.
+    fn record_portal_pass(
+        &self,
+        enc: &mut wgpu::CommandEncoder,
+        door_idx: usize,
+        dest: usize,
+        cam: Vec3,
+        view_proj: Mat4,
+    ) {
+        let dest_world = &self.worlds[dest];
+        let dest_theme = room_theme(dest as u8);
+
+        let portal_lvp = compute_light_view_proj(&dest_world.env, self.player.pos);
+        let u_shadow_portal = build_uniforms(
+            portal_lvp, &dest_world.env, &cam, &self.player.pos, 1.0,
+            &self.fireflies, false, self.time, &self.water.ripples_uniform, [0.0; 4]);
+        self.queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&u_shadow_portal));
         {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("shadow-current"),
+                label: Some("shadow-portal"),
                 color_attachments: &[],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &self.shadow_view,
@@ -2328,172 +2283,258 @@ impl Game {
             });
             pass.set_pipeline(&self.shadow_pipeline);
             pass.set_bind_group(0, &self.shadow_bg0, &[]);
-            pass.set_vertex_buffer(0, cur.vbuf.slice(..));
-            pass.set_index_buffer(cur.ibuf.slice(..), wgpu::IndexFormat::Uint32);
-            pass.draw_indexed(0..cur.index_count, 0, 0..1);
-            // Door is always present in either world — visible and
-            // casting shadow even from the locked side; only the
-            // portal's magic surface is gated by portal_active.
-            pass.set_vertex_buffer(0, self.portal.door_vbuf.slice(..));
-            pass.set_index_buffer(self.portal.door_ibuf.slice(..), wgpu::IndexFormat::Uint32);
-            pass.draw_indexed(0..self.portal.door_index_count, 0, 0..1);
-            // Skinned character — depth-only skin shader.
-            pass.set_pipeline(&self.skin_shadow_pipeline);
-            pass.set_bind_group(0, &self.shadow_bg0, &[]);
-            pass.set_bind_group(1, &self.character.bone_bind_group, &[]);
-            pass.set_vertex_buffer(0, self.character.vbuf.slice(..));
-            pass.set_index_buffer(self.character.ibuf.slice(..), wgpu::IndexFormat::Uint32);
-            pass.draw_indexed(0..self.character.index_count, 0, 0..1);
+            pass.set_vertex_buffer(0, dest_world.vbuf.slice(..));
+            pass.set_index_buffer(dest_world.ibuf.slice(..), wgpu::IndexFormat::Uint32);
+            pass.draw_indexed(0..dest_world.index_count, 0, 0..1);
         }
 
-        // ── PASS 3: main render of CURRENT room + both portal quads ──
-        // Door dream-blend — sample the nearest door's portal texture
-        // at an alpha that rises as the player approaches and falls
-        // as they walk away. Alpha is 1.0 right at the door plane so
-        // the world-flip moment is fully covered, then drops back to
-        // 0 over BLEND_RADIUS on either side.
-        let to_a = self.player.pos - PORTAL_A_POS;
-        let to_b = self.player.pos - PORTAL_B_POS;
-        let d_a = (to_a.x * to_a.x + to_a.z * to_a.z).sqrt();
-        let d_b = (to_b.x * to_b.x + to_b.z * to_b.z).sqrt();
-        let (nearest_door_d, nearest_door_idx) =
-            if d_a <= d_b { (d_a, 0usize) } else { (d_b, 1usize) };
-        let fade_alpha = (1.0 - nearest_door_d / BLEND_RADIUS).clamp(0.0, 1.0);
-        let u_main = build_uniforms(view_proj, &cur.env, &cam, &self.player.pos, 1.0, &self.fireflies, true, self.time, &self.water.ripples_uniform, [0.0, 0.0, 0.0, fade_alpha]);
+        // show_flies = true so the destination room's lighting includes
+        // the player's firefly glow — same as how that room will look
+        // once the player actually enters it, which makes the portal
+        // preview match the post-teleport reality (otherwise the colour
+        // shifts at the moment of crossing).
+        let u_portal = build_uniforms(
+            view_proj, &dest_world.env, &cam, &self.player.pos, 1.0,
+            &self.fireflies, true, self.time, &self.water.ripples_uniform, [0.0; 4]);
+        self.queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&u_portal));
+        let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("portal-view"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &self.portal.color_views[door_idx],
+                resolve_target: None,
+                depth_slice: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(dest_world.env.sky),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &self.portal.depth_views[door_idx],
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            ..Default::default()
+        });
+        pass.set_pipeline(&self.main_pipeline);
+        pass.set_bind_group(0, &self.main_bg0, &[]);
+        pass.set_bind_group(1, &self.main_bg1_shadow, &[]);
+        pass.set_vertex_buffer(0, dest_world.vbuf.slice(..));
+        pass.set_index_buffer(dest_world.ibuf.slice(..), wgpu::IndexFormat::Uint32);
+        pass.draw_indexed(0..dest_world.index_count, 0, 0..1);
+        self.draw_room_feature(&mut pass, dest_theme, /*include_decals=*/ false);
+        // No character / no fireflies in the portal view — they're with
+        // the player in the current room.
+    }
+
+    /// Shadow map for the room the player is in. Drawn into the same
+    /// `shadow_view` as the portal pre-pass — main pass reads whichever
+    /// was rendered last, which is this one.
+    fn record_shadow_pass_current(
+        &self,
+        enc: &mut wgpu::CommandEncoder,
+        cur: &WorldGpu,
+        cam: Vec3,
+    ) {
+        let light_view_proj = compute_light_view_proj(&cur.env, self.player.pos);
+        let u_shadow = build_uniforms(
+            light_view_proj, &cur.env, &cam, &self.player.pos, 1.0,
+            &self.fireflies, true, self.time, &self.water.ripples_uniform, [0.0; 4]);
+        self.queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&u_shadow));
+        let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("shadow-current"),
+            color_attachments: &[],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &self.shadow_view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            ..Default::default()
+        });
+        pass.set_pipeline(&self.shadow_pipeline);
+        pass.set_bind_group(0, &self.shadow_bg0, &[]);
+        pass.set_vertex_buffer(0, cur.vbuf.slice(..));
+        pass.set_index_buffer(cur.ibuf.slice(..), wgpu::IndexFormat::Uint32);
+        pass.draw_indexed(0..cur.index_count, 0, 0..1);
+        // Door is always present in either world — visible and casting
+        // shadow even from the locked side; only the portal's magic
+        // surface is gated by portal visibility.
+        pass.set_vertex_buffer(0, self.portal.door_vbuf.slice(..));
+        pass.set_index_buffer(self.portal.door_ibuf.slice(..), wgpu::IndexFormat::Uint32);
+        pass.draw_indexed(0..self.portal.door_index_count, 0, 0..1);
+        // Skinned character — depth-only skin shader.
+        pass.set_pipeline(&self.skin_shadow_pipeline);
+        pass.set_bind_group(0, &self.shadow_bg0, &[]);
+        pass.set_bind_group(1, &self.character.bone_bind_group, &[]);
+        pass.set_vertex_buffer(0, self.character.vbuf.slice(..));
+        pass.set_index_buffer(self.character.ibuf.slice(..), wgpu::IndexFormat::Uint32);
+        pass.draw_indexed(0..self.character.index_count, 0, 0..1);
+    }
+
+    /// Final pass — clears the swapchain to the sky colour, draws the
+    /// current room, its signature feature, the portal magic surfaces
+    /// (location), the dream-blend overlay, then the door frames,
+    /// character and fireflies on top (so they don't fade with the
+    /// room dissolve).
+    #[allow(clippy::too_many_arguments)]
+    fn record_main_pass(
+        &self,
+        enc: &mut wgpu::CommandEncoder,
+        frame_view: &wgpu::TextureView,
+        cur: &WorldGpu,
+        cur_world: u8,
+        cam: Vec3,
+        view_proj: Mat4,
+        portal_a_visible: bool,
+        portal_b_visible: bool,
+        fade_alpha: f32,
+        nearest_door_idx: usize,
+    ) {
+        let u_main = build_uniforms(
+            view_proj, &cur.env, &cam, &self.player.pos, 1.0,
+            &self.fireflies, true, self.time, &self.water.ripples_uniform,
+            [0.0, 0.0, 0.0, fade_alpha]);
         let cur_theme = room_theme(cur_world);
         self.queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&u_main));
-        {
-            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("main"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &frame_view,
-                    resolve_target: None,
-                    depth_slice: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(cur.env.sky),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.depth_view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
-                        store: wgpu::StoreOp::Store,
-                    }),
-                    stencil_ops: None,
+        let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("main"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: frame_view,
+                resolve_target: None,
+                depth_slice: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(cur.env.sky),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &self.depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Store,
                 }),
-                ..Default::default()
-            });
-            // Current world.
-            pass.set_pipeline(&self.main_pipeline);
+                stencil_ops: None,
+            }),
+            ..Default::default()
+        });
+        // Current world.
+        pass.set_pipeline(&self.main_pipeline);
+        pass.set_bind_group(0, &self.main_bg0, &[]);
+        pass.set_bind_group(1, &self.main_bg1_shadow, &[]);
+        pass.set_vertex_buffer(0, cur.vbuf.slice(..));
+        pass.set_index_buffer(cur.ibuf.slice(..), wgpu::IndexFormat::Uint32);
+        pass.draw_indexed(0..cur.index_count, 0, 0..1);
+        // Current room's signature feature (sand gets footprint decals;
+        // water gets ripple displacement; grass blades bend toward the
+        // player — all driven by the uniform array).
+        self.draw_room_feature(&mut pass, cur_theme, /*include_decals=*/ true);
+        // Portal magic surfaces — drawn before the dream-blend because
+        // they're part of the LOCATION. The blend overlay tints them
+        // along with everything else, then character + fireflies layer
+        // on top crisp.
+        let n = self.portal.indices_per_door;
+        if portal_a_visible || portal_b_visible {
+            pass.set_pipeline(&self.portal.pipeline);
             pass.set_bind_group(0, &self.main_bg0, &[]);
-            pass.set_bind_group(1, &self.main_bg1_shadow, &[]);
-            pass.set_vertex_buffer(0, cur.vbuf.slice(..));
-            pass.set_index_buffer(cur.ibuf.slice(..), wgpu::IndexFormat::Uint32);
-            pass.draw_indexed(0..cur.index_count, 0, 0..1);
-            // The current room's signature feature. Sand also gets
-            // its footprint overlay; water gets ripple displacement
-            // driven by the uniform array. Grass blades bend toward
-            // the player via the player_pos uniform.
-            match cur_theme {
-                RoomTheme::Sand => {
-                    pass.set_pipeline(&self.sand.pipeline);
-                    pass.set_bind_group(0, &self.main_bg0, &[]);
-                    pass.set_vertex_buffer(0, self.sand.vbuf.slice(..));
-                    pass.set_index_buffer(self.sand.ibuf.slice(..), wgpu::IndexFormat::Uint32);
-                    pass.draw_indexed(0..self.sand.index_count, 0, 0..1);
-                    if self.decal.index_count > 0 {
-                        pass.set_pipeline(&self.decal.pipeline);
-                        pass.set_bind_group(0, &self.main_bg0, &[]);
-                        pass.set_vertex_buffer(0, self.decal.vbuf.slice(..));
-                        pass.set_index_buffer(self.decal.ibuf.slice(..), wgpu::IndexFormat::Uint32);
-                        pass.draw_indexed(0..self.decal.index_count, 0, 0..1);
-                    }
-                }
-                RoomTheme::Grass => {
-                    pass.set_pipeline(&self.grass.pipeline);
-                    pass.set_bind_group(0, &self.main_bg0, &[]);
-                    pass.set_vertex_buffer(0, self.grass.vbuf.slice(..));
-                    pass.set_index_buffer(self.grass.ibuf.slice(..), wgpu::IndexFormat::Uint32);
-                    pass.draw_indexed(0..self.grass.index_count, 0, 0..1);
-                }
-                RoomTheme::Water => {
-                    pass.set_pipeline(&self.water.pipeline);
-                    pass.set_bind_group(0, &self.main_bg0, &[]);
-                    pass.set_vertex_buffer(0, self.water.vbuf.slice(..));
-                    pass.set_index_buffer(self.water.ibuf.slice(..), wgpu::IndexFormat::Uint32);
-                    pass.draw_indexed(0..self.water.index_count, 0, 0..1);
-                }
-                RoomTheme::Free => {}
+            pass.set_vertex_buffer(0, self.portal.vbuf.slice(..));
+            pass.set_index_buffer(self.portal.ibuf.slice(..), wgpu::IndexFormat::Uint32);
+            if portal_a_visible {
+                pass.set_bind_group(1, &self.portal.tex_bgs[0], &[]);
+                pass.draw_indexed(0..n, 0, 0..1);
             }
-            // Portal magic surfaces — drawn before the dream-blend
-            // because they're part of the LOCATION. The blend
-            // overlay tints them along with everything else, then
-            // the character + fireflies are layered on top crisp.
-            let n = self.portal.indices_per_door;
-            if portal_a_visible || portal_b_visible {
-                pass.set_pipeline(&self.portal.pipeline);
-                pass.set_bind_group(0, &self.main_bg0, &[]);
-                pass.set_vertex_buffer(0, self.portal.vbuf.slice(..));
-                pass.set_index_buffer(self.portal.ibuf.slice(..), wgpu::IndexFormat::Uint32);
-                if portal_a_visible {
-                    pass.set_bind_group(1, &self.portal.tex_bgs[0], &[]);
-                    pass.draw_indexed(0..n, 0, 0..1);
-                }
-                if portal_b_visible {
-                    pass.set_bind_group(1, &self.portal.tex_bgs[1], &[]);
-                    pass.draw_indexed(n..(2 * n), 0, 0..1);
-                }
-            }
-            // Door dream-blend — the LOCATION dissolves between
-            // rooms; the player, the door frames, and the fireflies
-            // below are drawn AFTER this so they stay crisp through
-            // the transition.
-            if fade_alpha > 0.0 {
-                pass.set_pipeline(&self.fade.pipeline);
-                pass.set_bind_group(0, &self.main_bg0, &[]);
-                pass.set_bind_group(1, &self.portal.tex_bgs[nearest_door_idx], &[]);
-                pass.set_vertex_buffer(0, self.fade.vbuf.slice(..));
-                pass.draw(0..3, 0..1);
-            }
-            // Door frames — drawn AFTER the dream-blend so they
-            // never fade. They're a permanent fixture in every
-            // room, not part of the dissolving environment.
-            pass.set_pipeline(&self.main_pipeline);
-            pass.set_bind_group(0, &self.main_bg0, &[]);
-            pass.set_bind_group(1, &self.main_bg1_shadow, &[]);
-            pass.set_vertex_buffer(0, self.portal.door_vbuf.slice(..));
-            pass.set_index_buffer(self.portal.door_ibuf.slice(..), wgpu::IndexFormat::Uint32);
-            pass.draw_indexed(0..self.portal.door_index_count, 0, 0..1);
-            // Skinned character — drawn after the dream-blend so it
-            // never fades. The transition is about the room, not
-            // the player.
-            if self.third_person {
-                pass.set_pipeline(&self.skin_pipeline);
-                pass.set_bind_group(0, &self.main_bg0, &[]);
-                pass.set_bind_group(1, &self.main_bg1_shadow, &[]);
-                pass.set_vertex_buffer(0, self.character.vbuf.slice(..));
-                pass.set_index_buffer(self.character.ibuf.slice(..), wgpu::IndexFormat::Uint32);
-                for sm in &self.character.submeshes {
-                    pass.set_bind_group(2, &sm.bind_group, &[]);
-                    pass.draw_indexed(sm.index_start..sm.index_start + sm.index_count, 0, 0..1);
-                }
-            }
-            // Fireflies — also drawn after the dream-blend; they
-            // follow the player and shouldn't fade with the room.
-            if self.firefly_mesh.count > 0 {
-                pass.set_pipeline(&self.main_pipeline);
-                pass.set_bind_group(0, &self.main_bg0, &[]);
-                pass.set_bind_group(1, &self.main_bg1_shadow, &[]);
-                pass.set_vertex_buffer(0, self.firefly_mesh.vbuf.slice(..));
-                pass.set_index_buffer(self.firefly_mesh.ibuf.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..self.firefly_mesh.count, 0, 0..1);
+            if portal_b_visible {
+                pass.set_bind_group(1, &self.portal.tex_bgs[1], &[]);
+                pass.draw_indexed(n..(2 * n), 0, 0..1);
             }
         }
+        // Door dream-blend — the LOCATION dissolves between rooms; the
+        // player, door frames, and fireflies below are drawn AFTER this
+        // so they stay crisp through the transition.
+        if fade_alpha > 0.0 {
+            pass.set_pipeline(&self.fade.pipeline);
+            pass.set_bind_group(0, &self.main_bg0, &[]);
+            pass.set_bind_group(1, &self.portal.tex_bgs[nearest_door_idx], &[]);
+            pass.set_vertex_buffer(0, self.fade.vbuf.slice(..));
+            pass.draw(0..3, 0..1);
+        }
+        // Door frames — drawn AFTER the dream-blend so they never fade.
+        // They're a permanent fixture in every room, not part of the
+        // dissolving environment.
+        pass.set_pipeline(&self.main_pipeline);
+        pass.set_bind_group(0, &self.main_bg0, &[]);
+        pass.set_bind_group(1, &self.main_bg1_shadow, &[]);
+        pass.set_vertex_buffer(0, self.portal.door_vbuf.slice(..));
+        pass.set_index_buffer(self.portal.door_ibuf.slice(..), wgpu::IndexFormat::Uint32);
+        pass.draw_indexed(0..self.portal.door_index_count, 0, 0..1);
+        // Skinned character — drawn after the dream-blend so it never
+        // fades. The transition is about the room, not the player.
+        if self.third_person {
+            pass.set_pipeline(&self.skin_pipeline);
+            pass.set_bind_group(0, &self.main_bg0, &[]);
+            pass.set_bind_group(1, &self.main_bg1_shadow, &[]);
+            pass.set_vertex_buffer(0, self.character.vbuf.slice(..));
+            pass.set_index_buffer(self.character.ibuf.slice(..), wgpu::IndexFormat::Uint32);
+            for sm in &self.character.submeshes {
+                pass.set_bind_group(2, &sm.bind_group, &[]);
+                pass.draw_indexed(sm.index_start..sm.index_start + sm.index_count, 0, 0..1);
+            }
+        }
+        // Fireflies — also drawn after the dream-blend.
+        if self.firefly_mesh.count > 0 {
+            pass.set_pipeline(&self.main_pipeline);
+            pass.set_bind_group(0, &self.main_bg0, &[]);
+            pass.set_bind_group(1, &self.main_bg1_shadow, &[]);
+            pass.set_vertex_buffer(0, self.firefly_mesh.vbuf.slice(..));
+            pass.set_index_buffer(self.firefly_mesh.ibuf.slice(..), wgpu::IndexFormat::Uint32);
+            pass.draw_indexed(0..self.firefly_mesh.count, 0, 0..1);
+        }
+    }
 
-        self.queue.submit(Some(enc.finish()));
-        frame.present();
-        self.window.request_redraw();
+    /// Picks the right ground-feature pipeline for a room and draws it.
+    /// When `include_decals` is true and the theme is Sand, the
+    /// footprint decals layer on top of the sand patch.
+    fn draw_room_feature<'a>(
+        &'a self,
+        pass: &mut wgpu::RenderPass<'a>,
+        theme: RoomTheme,
+        include_decals: bool,
+    ) {
+        match theme {
+            RoomTheme::Sand => {
+                pass.set_pipeline(&self.sand.pipeline);
+                pass.set_bind_group(0, &self.main_bg0, &[]);
+                pass.set_vertex_buffer(0, self.sand.vbuf.slice(..));
+                pass.set_index_buffer(self.sand.ibuf.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..self.sand.index_count, 0, 0..1);
+                if include_decals && self.decal.index_count > 0 {
+                    pass.set_pipeline(&self.decal.pipeline);
+                    pass.set_bind_group(0, &self.main_bg0, &[]);
+                    pass.set_vertex_buffer(0, self.decal.vbuf.slice(..));
+                    pass.set_index_buffer(self.decal.ibuf.slice(..), wgpu::IndexFormat::Uint32);
+                    pass.draw_indexed(0..self.decal.index_count, 0, 0..1);
+                }
+            }
+            RoomTheme::Grass => {
+                pass.set_pipeline(&self.grass.pipeline);
+                pass.set_bind_group(0, &self.main_bg0, &[]);
+                pass.set_vertex_buffer(0, self.grass.vbuf.slice(..));
+                pass.set_index_buffer(self.grass.ibuf.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..self.grass.index_count, 0, 0..1);
+            }
+            RoomTheme::Water => {
+                pass.set_pipeline(&self.water.pipeline);
+                pass.set_bind_group(0, &self.main_bg0, &[]);
+                pass.set_vertex_buffer(0, self.water.vbuf.slice(..));
+                pass.set_index_buffer(self.water.ibuf.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..self.water.index_count, 0, 0..1);
+            }
+            RoomTheme::Free => {}
+        }
     }
 }
 
