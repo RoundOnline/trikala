@@ -320,24 +320,28 @@ const PORTAL_HALF_W: f32 = 1.20;
 const PORTAL_HALF_H: f32 = 1.30;
 
 // Interactive ground zones — each is the central feature of its
-// themed room, sized to fill most of the visible play area in front
-// of the doors. Bounds drive both the mesh builders and the
+// themed room. Bounds drive both the mesh builders and the
 // per-frame `in_patch()` foot-on-feature checks (which only matter
 // when the player is in the matching room).
-const FEATURE_MIN: Vec3 = Vec3::new(-9.0, 0.0, -3.5);
-const FEATURE_MAX: Vec3 = Vec3::new(9.0, 0.0, 5.0);
-
-const GRASS_MIN: Vec3 = FEATURE_MIN;
-const GRASS_MAX: Vec3 = FEATURE_MAX;
-const GRASS_DENSITY: usize = 4500;
-
-const WATER_MIN: Vec3 = FEATURE_MIN;
-const WATER_MAX: Vec3 = FEATURE_MAX;
+//
+// Placement around the doors (at z = -5):
+//   spawn (z = +6)  ──south──  doors  ──north──  z = -12
+//
+//   Water: south side only (spawn area)
+//   Grass: north side only (the "other side" of the doors, what
+//          the player walks into after stepping through)
+//   Sand : both sides (covers the whole play area)
+const WATER_MIN: Vec3 = Vec3::new(-9.0, 0.0, -3.5);
+const WATER_MAX: Vec3 = Vec3::new( 9.0, 0.0,  5.0);
 const WATER_LEVEL: f32 = 0.04;
 const WATER_GRID: u32 = 56;
 
-const SAND_MIN: Vec3 = FEATURE_MIN;
-const SAND_MAX: Vec3 = FEATURE_MAX;
+const GRASS_MIN: Vec3 = Vec3::new(-9.0, 0.0, -12.0);
+const GRASS_MAX: Vec3 = Vec3::new( 9.0, 0.0,  -5.5);
+const GRASS_DENSITY: usize = 4500;
+
+const SAND_MIN: Vec3 = Vec3::new(-9.0, 0.0, -12.0);
+const SAND_MAX: Vec3 = Vec3::new( 9.0, 0.0,   8.0);
 const SAND_Y: f32 = 0.005;
 
 const MAX_RIPPLES: usize = 8;
