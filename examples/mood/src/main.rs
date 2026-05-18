@@ -638,7 +638,7 @@ fn build_decals(
     let mut indices = Vec::with_capacity(footprints.len() * 6);
     for &(pos, yaw, t0, side) in footprints.iter() {
         let age = now - t0;
-        if age < 0.0 || age > LIFETIME {
+        if !(0.0..=LIFETIME).contains(&age) {
             continue;
         }
         let age01 = age / LIFETIME;
@@ -728,7 +728,7 @@ enum AnimState {
     Jump,
 }
 
-fn resolve_state_clip<'a>(state: AnimState, character: &'a Character) -> Option<&'a str> {
+fn resolve_state_clip(state: AnimState, character: &Character) -> Option<&str> {
     match state {
         AnimState::Idle      => character.find_clip(&["Idle", "Standing", "Stand"]),
         AnimState::Walk      => character.walk_clip_name(),
@@ -2677,7 +2677,7 @@ impl Game {
             if self.footprints.len() == MAX_FOOTPRINTS {
                 self.footprints.pop_front();
             }
-            let side = if self.footprints.len() % 2 == 0 { 1.0 } else { -1.0 };
+            let side = if self.footprints.len().is_multiple_of(2) { 1.0 } else { -1.0 };
             self.footprints.push_back((self.player.pos, self.player.body_yaw, self.time, side));
             self.last_footprint_t = self.time;
         }
@@ -3010,6 +3010,7 @@ impl Game {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_uniforms(
     view_proj: Mat4,
     env: &WorldEnv,
