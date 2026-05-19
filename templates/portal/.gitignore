@@ -1,0 +1,4 @@
+/target
+/.trikala
+/dist
+*.wasm

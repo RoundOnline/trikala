@@ -1,0 +1,18 @@
+# trikala project config — `trikala use <version>` to switch.
+
+[project]
+name = "{{project-name}}"
+
+[trikala]
+version = "0.1.0-alpha.2"
+
+# Build variants — see docs/trikala-architecture.md.
+
+[variants.release]
+features = []
+optimize = "release"
+strip    = true
+
+[variants.dev]
+features = ["dev-panel", "hot-reload"]
+optimize = "debug"
