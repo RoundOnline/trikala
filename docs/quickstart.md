@@ -6,12 +6,18 @@ file an issue — that's a regression against axiom U2 / U3.
 ## Install
 
 ```sh
-# Recommended (axiom U11 — installer is the primary path)
+# macOS / Linux
 curl -fsSL https://trikala.round.online/install.sh | sh
 
-# Also works (slower; cargo build from source)
-cargo install trikala
+# Windows (PowerShell)
+irm https://trikala.round.online/install.ps1 | iex
 ```
+
+The installer drops a single binary into `~/.local/bin` (or
+`%LOCALAPPDATA%\trikala\bin` on Windows). No Rust toolchain needed
+for the install itself — but you'll need one
+([rustup.rs](https://rustup.rs)) to run `trikala dev` since the
+scaffolded project is a normal Cargo project.
 
 ## The whole loop
 
@@ -19,15 +25,16 @@ cargo install trikala
 trikala new starfighter           # อดีต — scaffold
 cd starfighter
 
-trikala dev                       # ปัจจุบัน — local game, hot reload
-# (edit src/main.rs or any file in shaders/, art/, music/ — instant update)
+trikala dev                       # ปัจจุบัน — runs cargo run + watches src/
+# (edit src/main.rs and save — the watcher kills the binary and re-runs)
 
-trikala deploy                    # อนาคต — ephemeral URL on round.online
-# >> https://round.online/play/anon/starfighter (valid 7 days)
+trikala build                     # อนาคต — release binary + assets in dist/
+trikala deploy                    # ephemeral URL (alpha.3+)
 ```
 
-That's it. No signup, no project linking, no `git push` before you
-can show someone.
+`trikala deploy` is server-mediated: the CLI uploads `dist/` to our
+endpoint and we host it. No wrangler, no Cloudflare account on your
+side. Lands in alpha.3.
 
 ## Keep the URL
 
@@ -45,22 +52,31 @@ trikala new mygame --template 2d-platformer
 # or: --template board-game | 2d-topdown | 2d-puzzle | card-game | 3d-arena
 ```
 
+(In alpha.2 only `blank` is shipped. The list above grows in alpha.3.)
+
+## What's in your project
+
+```
+my-game/
+├── Cargo.toml              # depends on wgpu / winit / kira / egui DIRECTLY (axiom F30)
+├── trikala.toml            # variants + foundation pin
+├── src/main.rs             # the whole game, ≤300 lines (axiom F29)
+├── art/                    # PNG / WebP — auto-discovered (axiom F4)
+├── music/                  # OGG — auto-discovered
+├── sfx/                    # OGG / WAV — auto-discovered
+└── fonts/                  # TTF / OTF — first one becomes default
+```
+
+Each subfolder has a `README.md` documenting format conventions and
+hot-reload behavior.
+
 ## Tune visuals without recompiling
 
-Press **F1** in `trikala dev` to open the debug panel. Adjust sliders.
-Click **Save Defaults** — values are written back to `tuning.toml`,
-which you commit to git. The next `trikala dev` boots with your tuned
+(Lands in alpha.3 alongside hot-reload work) Press **F1** in
+`trikala dev` to open the debug panel. Adjust sliders. Click
+**Save Defaults** — values are written back to `tuning.toml`, which
+you commit to git. The next `trikala dev` boots with your tuned
 values.
-
-## Ship to other targets
-
-```sh
-trikala deploy itch              # butler under the hood
-trikala deploy steam             # steamcmd under the hood
-trikala deploy cloudflare        # wrangler, bring your own CF_API_TOKEN
-trikala build --variant demo     # produce a demo binary
-trikala build --variant capture  # produce a capture binary
-```
 
 ## Troubleshooting
 
@@ -70,6 +86,10 @@ trikala doctor --gpu             # extra GPU benchmark
 trikala doctor --flame           # flamegraph of the current build
 ```
 
+(Doctor's full checks land in alpha.3 — for now it prints the list
+of things it *will* check.)
+
 Every error trikala emits has a code like `ATI-001`, a one-line
-cause, a one-line hint, and a `trikala.round.online/errors/...` URL. If you see
-a stack trace by default, that's a regression against axiom U4.
+cause, a one-line hint, and a `trikala.round.online/errors/...`
+URL. If you see a stack trace by default, that's a regression
+against axiom U4.

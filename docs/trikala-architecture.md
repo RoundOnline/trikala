@@ -118,12 +118,16 @@ trikala upgrade [version]            # self-update (U11)
 ```
 
 Deploy targets:
-- (default) `round.online` — anonymous-first (D5)
-- `itch` — butler wrapper
-- `steam` — steamcmd wrapper
-- `cloudflare` — wrangler (BYO account)
+- (default) `round.online` — anonymous-first (D5), server-mediated.
+  User installs only `trikala`; CLI uploads the bundle to our
+  endpoint and the server handles hosting. No wrangler, no
+  Cloudflare account on the user side.
+- `itch` — butler wrapper (alpha.3+)
+- `steam` — steamcmd wrapper (v0.2+)
+- `static` — `trikala build` already emits a `dist/` folder; users
+  who want to host elsewhere can upload it directly. No special
+  `trikala deploy static` target needed.
 - `android` — Play Console (v0.2+)
-- `static` — output zip
 
 ## Build variants (F14)
 
@@ -160,20 +164,28 @@ entry    = "src/bin/tools.rs"
 
 ## Hosting (round.online) — phased
 
-### v0.1: BYO Cloudflare
-- `trikala deploy cloudflare` ต้องมี `CF_API_TOKEN` ใน env
-- รัน `wrangler pages publish` ภายใต้ผ้าคลุม
-- `trikala deploy` (no arg) → friendly error: "trikala-managed hosting lands in v0.2"
+The hosting backend lives in the private `RoundOnline/trikala-machinery`
+repo (server source + ops). The CLI talks to it through a versioned
+`/v1/...` HTTP API; users never see Cloudflare directly.
 
-### v0.2: round.online default + anonymous-first
-- `trikala deploy` (no arg) → upload ไป round.online API → ephemeral URL ทันที (no auth)
-- `trikala claim` → GitHub OAuth → URL ถาวร
-- Quota ตาม `hosting-policy.md` (5 games / 100MB / claimed user; rate-limit per IP for anonymous)
-- Backend: Cloudflare Workers + R2 + D1
+### alpha.2: CLI inner loop, no deploy yet
+- `trikala new` / `dev` / `build` work locally
+- `trikala deploy` returns a friendly error pointing at this status
+- `dist/` from `trikala build` can be uploaded manually to any
+  static host as an escape hatch
 
-### v0.3: showcase + custom domain
-- `round.online/play` gallery
-- `trikala deploy --domain mygame.com` — CNAME → CF Pages
+### alpha.3: round.online server live, anonymous-first
+- `trikala deploy` → CLI uploads `dist/` to our endpoint → ephemeral
+  URL returned (no signup, no OAuth, no PAT)
+- `trikala claim` → GitHub OAuth → URL becomes permanent
+- Quota per `hosting-policy.md` (5 games / 100MB / claimed user;
+  rate-limit per IP for anonymous deploys)
+- Backend: Cloudflare Workers + R2 (bundle storage) + Pages (serving) + D1 (metadata)
+- Anonymous URL TTL: 7 days from last deploy
+
+### v0.2: showcase + custom domain
+- `round.online/play` gallery of claimed games
+- `trikala deploy --domain mygame.com` — DNS CNAME → managed Pages route
 
 ## Demo video script (60s — launch hook)
 

@@ -8,14 +8,52 @@ and trikala adopts [SemVer](https://semver.org/) from v1.0 onward
 
 ## [Unreleased]
 
-Tracked work for the next alpha:
+Tracked work for alpha.3:
 
-- `trikala new` wired against `cargo-generate`
-- `trikala dev` hot-reload loop (notify + dexterous_developer)
-- `trikala build` cross-platform via `cargo-mobile2` for Android
-- `trikala deploy cloudflare` via `wrangler`
+- `trikala deploy` + `trikala claim` (depends on `trikala-server`)
+- `trikala-server` initial deploy of the Workers + R2 + Pages backend
 - 6 more templates: 2d-platformer, 2d-topdown, 2d-puzzle, board-game,
   card-game, 3d-arena
+- `examples/showroom` — full landscape + 3D + font + HUD demo
+- Shader hot-reload inside `trikala dev` (`.wgsl` changes update
+  in-process without rebuilding)
+- `trikala doctor` — real toolchain + GPU + network checks
+
+## [0.1.0-alpha.2] — TBD
+
+The inner loop now works: scaffold a project, iterate with a watcher,
+build a release artifact. Deploy is still server-pending.
+
+### Added
+
+- `trikala new <name>` wired — embeds `templates/blank` into the CLI
+  binary at compile time, scaffolds offline, no network call
+- `trikala dev` wired — wraps `cargo run`, watches `src/` + `shaders/`,
+  restarts the child on `.rs` change. `--no-watch` for CI smoke tests.
+- `trikala build` wired — wraps `cargo build --release`, copies the
+  binary plus `art/ music/ sfx/ fonts/ shaders/ levels/` into `dist/`
+- `templates/blank` enhanced — asset-folder structure
+  (`art/ music/ sfx/ fonts/`) with READMEs documenting format and
+  hot-reload behavior
+- `install.sh` + `install.ps1` — one-line CLI install on
+  macOS / Linux / Windows from GitHub Releases
+- `examples/mood` — multi-room portal prototype (reference for the
+  scale of project trikala targets)
+- Release pipeline in `RoundOnline/trikala-machinery` —
+  GitHub Actions workflow builds 4 platform targets on `v*` tag push
+  and uploads to this repo's GitHub Releases
+
+### Changed
+
+- CLI source moved out of this repo into the private
+  `RoundOnline/trikala-machinery` repo. This public repo now contains
+  only what users fork: templates, examples, the `trikala-core`
+  foundation crate, and design docs. The CLI binary ships through
+  install.sh / GitHub Releases.
+- Deploy model: `trikala deploy` will be **server-mediated** (CLI
+  uploads to our endpoint, server handles hosting). No more BYO
+  Cloudflare / wrangler flow. The architecture.md sections about
+  `CF_API_TOKEN` and BYO Cloudflare are obsoleted by this change.
 
 ## [0.1.0-alpha.1] — 2026-05-15
 
@@ -34,20 +72,8 @@ arrive incrementally in subsequent alphas.
   D (Deploy), C (Community), I (Integration) with v2 trigger gate
 - Design documents: architecture, pitch, phases, quickstart,
   AI prompt cards, hosting policy, telemetry schema
-- CI matrix: fmt + clippy + test on Win/Mac/Linux + wasm32 build
 - Dual MIT / Apache-2.0 license
 
-### Not yet shipping
-
-Each stub returns `anyhow::bail!("... coming in 0.1.0-alpha.2")`:
-
-- Real scaffold flow (`trikala new` currently bails)
-- Hot reload loop (`trikala dev` currently bails)
-- Cross-compile build (`trikala build` currently bails)
-- Deploy targets (`trikala deploy` currently bails)
-- Self-update (`trikala upgrade` currently bails)
-- `trikala-server` (round.online hosting) — separate repository,
-  arrives in v0.2
-
-[Unreleased]: https://github.com/RoundOnline/trikala/compare/v0.1.0-alpha.1...HEAD
+[Unreleased]: https://github.com/RoundOnline/trikala/compare/v0.1.0-alpha.2...HEAD
+[0.1.0-alpha.2]: https://github.com/RoundOnline/trikala/compare/v0.1.0-alpha.1...v0.1.0-alpha.2
 [0.1.0-alpha.1]: https://github.com/RoundOnline/trikala/releases/tag/v0.1.0-alpha.1
