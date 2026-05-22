@@ -2,6 +2,7 @@
 //! the two sword attacks.
 
 use crate::geometry::{flash_color, push_box, push_rotated, Vertex};
+use crate::weapon::Weapon;
 use glam::{Mat4, Vec3};
 
 pub const CHARGE_MIN: f32 = 0.25; // hold the attack this long for a heavy slash
@@ -89,19 +90,36 @@ pub struct CharacterPose {
     pub sword_arm: Mat4,
     pub lean: f32,
     pub flash: f32,
+    pub weapon: Weapon,
 }
 
 /// One arm — shoulder, forearm, hand (and a sword if `with_sword`) —
 /// rotated about the shoulder.
-fn push_arm(local: &mut Vec<Vertex>, x: f32, rot: Mat4, with_sword: bool) {
+fn push_arm(local: &mut Vec<Vertex>, x: f32, rot: Mat4, held: Option<Weapon>) {
     let mut arm: Vec<Vertex> = Vec::new();
     push_box(&mut arm, Vec3::new(x, 1.05, 0.0), Vec3::new(0.06, 0.09, 0.08), SHIRT);
     push_box(&mut arm, Vec3::new(x, 0.83, 0.0), Vec3::new(0.052, 0.14, 0.065), SKIN);
     push_box(&mut arm, Vec3::new(x, 0.64, 0.0), Vec3::new(0.06, 0.06, 0.07), SKIN);
-    if with_sword {
-        push_box(&mut arm, Vec3::new(x, 0.585, 0.0), Vec3::new(0.034, 0.085, 0.034), [0.34, 0.23, 0.15]);
-        push_box(&mut arm, Vec3::new(x, 0.49, 0.0), Vec3::new(0.135, 0.025, 0.05), [0.22, 0.19, 0.16]);
-        push_box(&mut arm, Vec3::new(x, 0.27, 0.0), Vec3::new(0.045, 0.20, 0.022), [0.74, 0.76, 0.80]);
+    let wood = [0.40, 0.28, 0.18];
+    let metal = [0.74, 0.76, 0.80];
+    match held {
+        Some(Weapon::Sword) => {
+            push_box(&mut arm, Vec3::new(x, 0.585, 0.0), Vec3::new(0.034, 0.085, 0.034), [0.34, 0.23, 0.15]);
+            push_box(&mut arm, Vec3::new(x, 0.49, 0.0), Vec3::new(0.135, 0.025, 0.05), [0.22, 0.19, 0.16]);
+            push_box(&mut arm, Vec3::new(x, 0.27, 0.0), Vec3::new(0.045, 0.20, 0.022), metal);
+        }
+        Some(Weapon::Spear) => {
+            push_box(&mut arm, Vec3::new(x, 0.56, 0.0), Vec3::new(0.03, 0.09, 0.03), wood);
+            push_box(&mut arm, Vec3::new(x, 0.20, 0.0), Vec3::new(0.022, 0.40, 0.022), wood);
+            push_box(&mut arm, Vec3::new(x, -0.27, 0.0), Vec3::new(0.04, 0.10, 0.035), metal);
+        }
+        Some(Weapon::Bow) => {
+            push_box(&mut arm, Vec3::new(x, 0.49, 0.0), Vec3::new(0.03, 0.10, 0.03), wood);
+            push_box(&mut arm, Vec3::new(x, 0.70, 0.04), Vec3::new(0.022, 0.13, 0.028), wood);
+            push_box(&mut arm, Vec3::new(x, 0.28, 0.04), Vec3::new(0.022, 0.13, 0.028), wood);
+            push_box(&mut arm, Vec3::new(x, 0.49, 0.075), Vec3::new(0.006, 0.32, 0.006), [0.85, 0.83, 0.78]);
+        }
+        None => {}
     }
     push_rotated(local, &arm, Vec3::new(x, 1.14, 0.0), rot);
 }
@@ -132,8 +150,8 @@ pub fn push_character(out: &mut Vec<Vertex>, pose: &CharacterPose) {
         push_rotated(&mut local, &leg, Vec3::new(side, 0.58, 0.0), Mat4::from_rotation_x(swing * 0.55 * dir));
     }
 
-    push_arm(&mut local, -0.25, Mat4::from_rotation_x(swing * -0.45), false);
-    push_arm(&mut local, 0.25, pose.sword_arm, true);
+    push_arm(&mut local, -0.25, Mat4::from_rotation_x(swing * -0.45), None);
+    push_arm(&mut local, 0.25, pose.sword_arm, Some(pose.weapon));
 
     // forward lean, then turn to face the heading, then place in world
     let pivot = Vec3::new(0.0, 0.45, 0.0);

@@ -102,3 +102,18 @@ pub fn push_blob(out: &mut Vec<Vertex>, ground_pos: Vec3, radius: f32) {
         }
     }
 }
+
+/// A flat coloured disc on the ground — a marker such as the spawn
+/// point. Drawn flat (zero normal), so it shows its full colour, unlit.
+pub fn push_disc(out: &mut Vec<Vertex>, center: Vec3, radius: f32, color: [f32; 3]) {
+    let seg = 16;
+    for i in 0..seg {
+        let a0 = (i as f32) / (seg as f32) * std::f32::consts::TAU;
+        let a1 = ((i + 1) as f32) / (seg as f32) * std::f32::consts::TAU;
+        let r0 = center + Vec3::new(a0.cos() * radius, 0.0, a0.sin() * radius);
+        let r1 = center + Vec3::new(a1.cos() * radius, 0.0, a1.sin() * radius);
+        for p in [center, r0, r1] {
+            out.push(Vertex { pos: p.to_array(), normal: FLAT_NORMAL, color });
+        }
+    }
+}

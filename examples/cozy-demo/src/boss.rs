@@ -4,7 +4,7 @@
 //! light is spent, calms and settles for good.
 
 use crate::character::sample;
-use crate::geometry::{flash_color, push_box, push_box_emissive, push_rotated, Vertex, FLAT_NORMAL};
+use crate::geometry::{flash_color, push_box, push_box_emissive, push_disc, push_rotated, Vertex};
 use crate::world::{solid_height, tile_height};
 use glam::{Mat4, Vec3};
 
@@ -21,6 +21,7 @@ const ZONE_REACH: f32 = 3.4; // how far ahead of the boss the slam lands
 const DAMAGE_RADIUS: f32 = 2.7;
 const HIT_FLASH_DUR: f32 = 0.22;
 const MAX_HP: f32 = 12.0;
+const BOSS_RESPAWN: f32 = 6.0; // calm time before the Warden wakes anew
 
 /// Footprint radius — used by the boss's own collision and the player's.
 pub const BOSS_RADIUS: f32 = 2.0;
@@ -56,6 +57,8 @@ pub struct Boss {
     /// Where the slam will land — locked when the attack commits, so
     /// the telegraph stays put and the player can step clear.
     attack_center: Vec3,
+    defeated: bool, // true the one frame its health runs out
+    respawn_t: f32, // countdown while calm, before it revives
 }
 
 impl Boss {
@@ -70,6 +73,8 @@ impl Boss {
             hit_flash: 0.0,
             struck: false,
             attack_center: Vec3::ZERO,
+            defeated: false,
+            respawn_t: 0.0,
         }
     }
 
@@ -77,10 +82,25 @@ impl Boss {
         self.pos
     }
 
+    /// Remaining health as a 0..1 fraction, for the HUD bar.
+    pub fn hp_fraction(&self) -> f32 {
+        (self.hp / MAX_HP).clamp(0.0, 1.0)
+    }
+
+    /// True while the boss is roused — chasing, attacking or recovering.
+    pub fn awake(&self) -> bool {
+        matches!(self.state, State::Chase | State::Attack | State::Recover)
+    }
+
     /// True for the single frame the slam lands — test the player
     /// against `attack_zone` when this is set.
     pub fn struck(&self) -> bool {
         self.struck
+    }
+
+    /// True for the single frame the boss is defeated — drop loot then.
+    pub fn defeated(&self) -> bool {
+        self.defeated
     }
 
     /// The slam's damage circle (centre, radius), while attacking.
@@ -104,15 +124,26 @@ impl Boss {
     /// Advance the boss: wake near the player, chase, slam, recover.
     pub fn update(&mut self, dt: f32, player: Vec3) {
         self.struck = false;
+        self.defeated = false;
         self.anim_t += dt;
         self.hit_flash = (self.hit_flash - dt).max(0.0);
         // stay grounded on the procedural terrain
         self.pos.y = tile_height(self.pos.x.floor() as i32, self.pos.z.floor() as i32);
 
-        if self.hp <= 0.0 {
+        if self.hp <= 0.0 && self.state != State::Calm {
             self.state = State::Calm;
+            self.defeated = true;
+            self.respawn_t = BOSS_RESPAWN;
         }
         if self.state == State::Calm {
+            self.respawn_t -= dt;
+            if self.respawn_t <= 0.0 {
+                // wake anew — full health, asleep as a tree again
+                self.hp = MAX_HP;
+                self.hit_flash = 0.0;
+                self.timer = 0.0;
+                self.state = State::Sleep;
+            }
             return;
         }
 
@@ -211,16 +242,7 @@ impl Boss {
                 let k = (wp / STRIKE_FRAC).min(1.0);
                 [0.5 + 0.5 * k, 0.16 + 0.10 * k, 0.06]
             };
-            let seg = 16;
-            for i in 0..seg {
-                let a0 = i as f32 / seg as f32 * std::f32::consts::TAU;
-                let a1 = (i + 1) as f32 / seg as f32 * std::f32::consts::TAU;
-                let p0 = c + Vec3::new(a0.cos() * DAMAGE_RADIUS, 0.0, a0.sin() * DAMAGE_RADIUS);
-                let p1 = c + Vec3::new(a1.cos() * DAMAGE_RADIUS, 0.0, a1.sin() * DAMAGE_RADIUS);
-                for p in [c, p0, p1] {
-                    out.push(Vertex { pos: p.to_array(), normal: FLAT_NORMAL, color: col });
-                }
-            }
+            push_disc(out, c, DAMAGE_RADIUS, col);
         }
 
         let bark = [0.22, 0.16, 0.13];
