@@ -2,8 +2,8 @@
 
 > **Fork a template. Make it yours. Ship it.**
 >
-> Born, built, shipped — three commands, no signup.
-> The first Rust game CLI that ships with an AI-agent skill.
+> Short, readable, fork-able Rust game templates — plus a CLI to
+> scaffold and run them. Early alpha, built in the open.
 
 ## Install
 
@@ -36,9 +36,10 @@ When ready:
 
 ```sh
 trikala build       # release binary + assets in dist/
-trikala deploy      # public URL, anonymous, 7-day default
-                    # `trikala claim` to keep forever
 ```
+
+Hosting — `trikala deploy` for a public URL — is on the way; see
+**What's in alpha.2** below for what already works.
 
 ## What's in alpha.2
 
