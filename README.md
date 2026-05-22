@@ -7,17 +7,17 @@
 
 ## Install
 
-```sh
-# macOS / Linux
-curl -fsSL https://trikala.round.online/install.sh | sh
+> **Alpha — not yet packaged.** The one-line installer below is the
+> planned install path, but the `trikala.round.online` endpoint is
+> not live yet. For now, work from a clone of this repo.
 
-# Windows (PowerShell)
-irm https://trikala.round.online/install.ps1 | iex
+```sh
+# planned — not live yet
+curl -fsSL https://trikala.round.online/install.sh | sh   # macOS / Linux
+irm https://trikala.round.online/install.ps1 | iex        # Windows (PowerShell)
 ```
 
-That puts the `trikala` binary on your `$PATH`. No Rust toolchain
-needed for install itself — but you'll want one before `trikala dev`
-since the scaffolded project is a normal Cargo project:
+You'll need a Rust toolchain to build and run anything here:
 
 - Rust 1.78+ ([rustup.rs](https://rustup.rs))
 - ~2 GB free disk space for the build cache (first build ~5 min)
