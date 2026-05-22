@@ -7,21 +7,17 @@
 
 ## Install
 
-> **Alpha — not yet packaged.** The one-line installer below is the
-> planned install path, but the `trikala.round.online` endpoint is
-> not live yet. For now, work from a clone of this repo.
+trikala is in alpha — clone the repo and build it from source:
 
 ```sh
-# planned — not live yet
-curl -fsSL https://trikala.round.online/install.sh | sh   # macOS / Linux
-irm https://trikala.round.online/install.ps1 | iex        # Windows (PowerShell)
+git clone https://github.com/RoundOnline/trikala
+cd trikala
+cargo run -p trikala-hello
 ```
 
-You'll need a Rust toolchain to build and run anything here:
-
-- Rust 1.78+ ([rustup.rs](https://rustup.rs))
-- ~2 GB free disk space for the build cache (first build ~5 min)
-- macOS, Linux, or Windows
+It's a standard Cargo workspace — you need Rust 1.78+
+([rustup.rs](https://rustup.rs)) and ~2 GB of free disk for the build
+cache (the first build takes ~5 min). Works on macOS, Linux and Windows.
 
 ## Try it
 
