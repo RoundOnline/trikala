@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/trikala-core",
+    "examples/cozy-demo",
     "examples/hello",
     "examples/mood",
     "examples/showroom",

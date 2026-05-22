@@ -1,0 +1,18 @@
+# A cozy 3D game example — walk and jump around a stepped dusk meadow,
+# climb hills and trees, and slash a sword (quick + charged attacks).
+# All geometry is generated in code. Per axiom F30, this example uses
+# wgpu/winit directly — no trikala-* imports.
+
+[package]
+name    = "trikala-cozy-demo"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+# Same exact pins as the other examples (F21).
+wgpu     = "=27.0.1"
+winit    = "=0.30.5"
+pollster = "=0.4.0"
+bytemuck = { version = "=1.22.0", features = ["derive"] }
+glam     = { version = "=0.29.2", features = ["bytemuck"] }
