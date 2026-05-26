@@ -254,6 +254,26 @@ If a user has opted in (U12), the CLI emits the 9 fields in
 project names, source code, or environment variables. The schema is
 load-bearing (U15).
 
+## Self-check before submitting code
+
+Before proposing code that touches a template's `src/` or `Cargo.toml`, run:
+
+```sh
+bash scripts/check-template.sh [template-dir]
+```
+
+(defaults to the current directory). The script verifies the three rules
+from the 30-second summary mechanically:
+
+- **F29** — total `.rs` lines under `src/` is ≤ 300
+- **F30** — no import of `trikala-render` / `trikala-audio` / `trikala-text` /
+  `trikala-ui` / `trikala-assets` / `trikala-save` / `trikala-net`
+- **F21** — every dependency version is pinned `=x.y.z` (not `^`, `~`, or bare)
+
+Exit code is non-zero if any check fails. If you can't run shell from your
+harness, perform the same three checks by reading `Cargo.toml` and `wc`-ing
+`src/**/*.rs` manually — the rule is what matters, not the tool.
+
 ## When unsure
 
 - Read `docs/trikala-axioms-v1.md` first. The 82 axioms answer most
