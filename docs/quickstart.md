@@ -5,19 +5,17 @@ file an issue — that's a regression against axiom U2 / U3.
 
 ## Install
 
-```sh
-# macOS / Linux
-curl -fsSL https://trikala.round.online/install.sh | sh
+trikala is in alpha — clone the repo and build it from source:
 
-# Windows (PowerShell)
-irm https://trikala.round.online/install.ps1 | iex
+```sh
+git clone https://github.com/RoundOnline/trikala
+cd trikala
+cargo run -p trikala-hello
 ```
 
-The installer drops a single binary into `~/.local/bin` (or
-`%LOCALAPPDATA%\trikala\bin` on Windows). No Rust toolchain needed
-for the install itself — but you'll need one
-([rustup.rs](https://rustup.rs)) to run `trikala dev` since the
-scaffolded project is a normal Cargo project.
+Standard Cargo workspace — you need Rust 1.78+
+([rustup.rs](https://rustup.rs)). First build takes ~5 minutes;
+subsequent builds are seconds. Works on macOS, Linux, and Windows.
 
 ## The whole loop
 
@@ -90,6 +88,6 @@ trikala doctor --flame           # flamegraph of the current build
 of things it *will* check.)
 
 Every error trikala emits has a code like `ATI-001`, a one-line
-cause, a one-line hint, and a `trikala.round.online/errors/...`
-URL. If you see a stack trace by default, that's a regression
-against axiom U4.
+cause, a one-line hint, and a link to a GitHub issues search for
+that code (so you can see if anyone else has hit it). If you see a
+stack trace by default, that's a regression against axiom U4.

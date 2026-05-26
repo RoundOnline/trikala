@@ -85,7 +85,7 @@ impl TrikalaError {
     /// Construct an error in the given phase with an auto-coded number.
     pub fn new(phase: Phase, num: u16, cause: impl Into<String>, hint: impl Into<String>) -> Self {
         let code = format!("{}-{:03}", phase.code(), num);
-        let docs_url = format!("https://trikala.round.online/errors/{}", code.to_lowercase());
+        let docs_url = format!("https://github.com/RoundOnline/trikala/issues?q={}", code);
         Self { code, cause: cause.into(), hint: hint.into(), docs_url }
     }
 }
@@ -98,7 +98,7 @@ mod tests {
     fn error_carries_all_four_fields() {
         let err = TrikalaError::new(Phase::Anagata, 12, "deploy refused", "run `trikala claim`");
         assert_eq!(err.code, "ANA-012");
-        assert!(err.docs_url.contains("ana-012"));
+        assert!(err.docs_url.contains("ANA-012"));
     }
 
     #[test]
